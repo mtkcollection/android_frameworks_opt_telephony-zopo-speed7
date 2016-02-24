@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006, 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,15 +30,19 @@ import android.os.RegistrantList;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.PersoSubState;
 import com.android.internal.telephony.uicc.IccCardStatus.PinState;
+
 import com.android.internal.telephony.SubscriptionController;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+
+import android.os.SystemProperties;
 
 /**
  * {@hide}
@@ -87,6 +96,44 @@ public class UiccCardApplication {
     private RegistrantList mPinLockedRegistrants = new RegistrantList();
     private RegistrantList mNetworkLockedRegistrants = new RegistrantList();
 
+    // Added by M begin
+
+    private int mPhoneId;
+
+    private static final int EVENT_QUERY_NETWORK_LOCK_DONE = 101;
+    private static final int EVENT_CHANGE_NETWORK_LOCK_DONE = 102;
+    private static final int EVENT_RADIO_NOTAVAILABLE = 103;
+    // [ALPS01827777]--- START ---
+    private static final int EVENT_PUK1_CHANGE_PIN1_DONE = 104;
+    private static final int EVENT_PUK2_CHANGE_PIN2_DONE = 105;
+    // [ALPS01827777]--- END ---
+
+
+    // [02772] start
+    static final String[] UICCCARDAPPLICATION_PROPERTY_RIL_UICC_TYPE = {
+        "gsm.ril.uicctype",
+        "gsm.ril.uicctype.2",
+        "gsm.ril.uicctype.3",
+        "gsm.ril.uicctype.4",
+    };
+    protected String mIccType = null; /* Add for USIM detect */
+    // [02772] end
+
+    private static final String PROPERTY_PIN1_RETRY[] = {
+        "gsm.sim.retry.pin1",
+        "gsm.sim.retry.pin1.2",
+        "gsm.sim.retry.pin1.3",
+        "gsm.sim.retry.pin1.4",
+    };
+
+    private static final String PROPERTY_PIN2_RETRY[] = {
+        "gsm.sim.retry.pin2",
+        "gsm.sim.retry.pin2.2",
+        "gsm.sim.retry.pin2.3",
+        "gsm.sim.retry.pin2.4",
+    };
+    // Added by M end
+
     UiccCardApplication(UiccCard uiccCard,
                         IccCardApplicationStatus as,
                         Context c,
@@ -103,12 +150,25 @@ public class UiccCardApplication {
         mPin1State = as.pin1;
         mPin2State = as.pin2;
 
+        // MTK-START
+        // Modem workaround: AT+EPIN? might get wrong result
+        // Suppose USIM and ISIM using the same PIN and ISIM application only be created
+        // in case of USIM ready.
+        // Reference CR: ALPS01841211
+        if (mAppType == AppType.APPTYPE_ISIM) {
+            mAppState = AppState.APPSTATE_READY;
+            mPin1State = PinState.PINSTATE_UNKNOWN;
+        }
+        // MTK-END
+
         mContext = c;
         mCi = ci;
 
+        mPhoneId = mUiccCard.getPhoneId();
+
         mIccFh = createIccFileHandler(as.app_type);
         mIccRecords = createIccRecords(as.app_type, mContext, mCi);
-        if (mAppState == AppState.APPSTATE_READY) {
+        if (mAppState == AppState.APPSTATE_READY && mAppType != AppType.APPTYPE_ISIM) {
             queryFdn();
             queryPin1State();
         }
@@ -138,6 +198,17 @@ public class UiccCardApplication {
             mPin1State = as.pin1;
             mPin2State = as.pin2;
 
+            // MTK-START
+            // Modem workaround: AT+EPIN? might get wrong result
+            // Suppose USIM and ISIM using the same PIN and ISIM application only be created
+            // in case of USIM ready.
+            // Reference CR: ALPS01841211
+            if (mAppType == AppType.APPTYPE_ISIM) {
+                mAppState = AppState.APPSTATE_READY;
+                mPin1State = PinState.PINSTATE_UNKNOWN;
+            }
+            // MTK-END
+
             if (mAppType != oldAppType) {
                 if (mIccFh != null) { mIccFh.dispose();}
                 if (mIccRecords != null) { mIccRecords.dispose();}
@@ -145,16 +216,22 @@ public class UiccCardApplication {
                 mIccRecords = createIccRecords(as.app_type, c, ci);
             }
 
-            if (mPersoSubState != oldPersoSubState &&
-                    mPersoSubState == PersoSubState.PERSOSUBSTATE_SIM_NETWORK) {
+            /*
+                [02772][ALPS00437082]
+                mediatek platform will set network locked for all of subState (5 type of network locked)
+            */
+            if (DBG) log("mPersoSubState: " + mPersoSubState + " oldPersoSubState: " + oldPersoSubState);
+            if (mPersoSubState != oldPersoSubState /*&&
+                    mPersoSubState == PersoSubState.PERSOSUBSTATE_SIM_NETWORK*/) {
                 notifyNetworkLockedRegistrantsIfNeeded(null);
             }
 
+            if (DBG) log("update,  mAppState=" + mAppState + "  oldAppState=" + oldAppState);
             if (mAppState != oldAppState) {
                 if (DBG) log(oldAppType + " changed state: " + oldAppState + " -> " + mAppState);
                 // If the app state turns to APPSTATE_READY, then query FDN status,
                 //as it might have failed in earlier attempt.
-                if (mAppState == AppState.APPSTATE_READY) {
+                if (mAppState == AppState.APPSTATE_READY && mAppType != AppType.APPTYPE_ISIM) {
                     queryFdn();
                     queryPin1State();
                 }
@@ -177,6 +254,7 @@ public class UiccCardApplication {
     }
 
     private IccRecords createIccRecords(AppType type, Context c, CommandsInterface ci) {
+        if (DBG) log("createIccRecords, AppType = " + type);
         if (type == AppType.APPTYPE_USIM || type == AppType.APPTYPE_SIM) {
             return new SIMRecords(this, c, ci);
         } else if (type == AppType.APPTYPE_RUIM || type == AppType.APPTYPE_CSIM){
@@ -250,19 +328,29 @@ public class UiccCardApplication {
     private void onChangeFdnDone(AsyncResult ar) {
         synchronized (mLock) {
             int attemptsRemaining = -1;
-
+            boolean bNotifyFdnChanged = false;
             if (ar.exception == null) {
                 mIccFdnEnabled = mDesiredFdnEnabled;
                 if (DBG) log("EVENT_CHANGE_FACILITY_FDN_DONE: " +
                         "mIccFdnEnabled=" + mIccFdnEnabled);
+                bNotifyFdnChanged = true;
             } else {
                 attemptsRemaining = parsePinPukErrorResult(ar);
+                if (attemptsRemaining == -1) {
+                    attemptsRemaining =
+                            SystemProperties.getInt(PROPERTY_PIN2_RETRY[getSlotId()], -1);
+                }
                 loge("Error change facility fdn with exception " + ar.exception);
             }
             Message response = (Message)ar.userObj;
             response.arg1 = attemptsRemaining;
             AsyncResult.forMessage(response).exception = ar.exception;
             response.sendToTarget();
+
+            if (bNotifyFdnChanged) {
+                log("notifyFdnChangedRegistrants");
+                notifyFdnChangedRegistrants();
+            }
         }
     }
 
@@ -337,6 +425,10 @@ public class UiccCardApplication {
                         + mIccLockEnabled);
             } else {
                 attemptsRemaining = parsePinPukErrorResult(ar);
+                if (attemptsRemaining == -1) {
+                    attemptsRemaining =
+                            SystemProperties.getInt(PROPERTY_PIN1_RETRY[getSlotId()], -1);
+                }
                 loge("Error change facility lock with exception " + ar.exception);
             }
             Message response = (Message)ar.userObj;
@@ -392,6 +484,35 @@ public class UiccCardApplication {
                     response.arg1 = attemptsRemaining;
                     response.sendToTarget();
                     break;
+                // [ALPS01827777]--- START ---
+                // Need to query lock setting since it might be changed when
+                // entering PUK to change PIN.
+                case EVENT_PUK1_CHANGE_PIN1_DONE:
+                    log("EVENT_PUK1_CHANGE_PIN1_DONE");
+                    int attemptsRemainingPuk = -1;
+                    ar = (AsyncResult) msg.obj;
+                    if ((ar.exception != null) && (ar.result != null)) {
+                        attemptsRemainingPuk = parsePinPukErrorResult(ar);
+                    }
+                    Message responsePuk = (Message) ar.userObj;
+                    AsyncResult.forMessage(responsePuk).exception = ar.exception;
+                    responsePuk.arg1 = attemptsRemainingPuk;
+                    responsePuk.sendToTarget();
+                    queryPin1State();
+                    break;
+                case EVENT_PUK2_CHANGE_PIN2_DONE:
+                    int attemptsRemainingPuk2 = -1;
+                    ar = (AsyncResult) msg.obj;
+                    if ((ar.exception != null) && (ar.result != null)) {
+                        attemptsRemainingPuk2 = parsePinPukErrorResult(ar);
+                    }
+                    Message responsePuk2 = (Message) ar.userObj;
+                    AsyncResult.forMessage(responsePuk2).exception = ar.exception;
+                    responsePuk2.arg1 = attemptsRemainingPuk2;
+                    responsePuk2.sendToTarget();
+                    queryFdn();
+                    break;
+                // [ALPS01827777]--- END ---
                 case EVENT_QUERY_FACILITY_FDN_DONE:
                     ar = (AsyncResult)msg.obj;
                     onQueryFdnEnabled(ar);
@@ -411,6 +532,28 @@ public class UiccCardApplication {
                 case EVENT_RADIO_UNAVAILABLE:
                     if (DBG) log("handleMessage (EVENT_RADIO_UNAVAILABLE)");
                     mAppState = AppState.APPSTATE_UNKNOWN;
+                    break;
+                case EVENT_QUERY_NETWORK_LOCK_DONE:
+                    if (DBG) log("handleMessage (EVENT_QUERY_NETWORK_LOCK)");
+                    ar = (AsyncResult) msg.obj;
+
+                    if (ar.exception != null) {
+                        Rlog.e(LOG_TAG, "Error query network lock with exception "
+                            + ar.exception);
+                    }
+                    AsyncResult.forMessage((Message) ar.userObj, ar.result, ar.exception);
+                    ((Message) ar.userObj).sendToTarget();
+                    break;
+                case EVENT_CHANGE_NETWORK_LOCK_DONE:
+                    if (DBG) log("handleMessage (EVENT_CHANGE_NETWORK_LOCK)");
+                    ar = (AsyncResult) msg.obj;
+                    if (ar.exception != null) {
+                        Rlog.e(LOG_TAG, "Error change network lock with exception "
+                            + ar.exception);
+                    }
+                    AsyncResult.forMessage(((Message) ar.userObj)).exception
+                                                        = ar.exception;
+                    ((Message) ar.userObj).sendToTarget();
                     break;
                 default:
                     loge("Unknown Event " + msg.what);
@@ -531,8 +674,8 @@ public class UiccCardApplication {
             return;
         }
 
-        if (mAppState == AppState.APPSTATE_SUBSCRIPTION_PERSO &&
-                mPersoSubState == PersoSubState.PERSOSUBSTATE_SIM_NETWORK) {
+        if (mAppState == AppState.APPSTATE_SUBSCRIPTION_PERSO /*&&
+                mPersoSubState == PersoSubState.PERSOSUBSTATE_SIM_NETWORK*/) {
             if (r == null) {
                 if (DBG) log("Notifying registrants: NETWORK_LOCKED");
                 mNetworkLockedRegistrants.notifyRegistrants();
@@ -675,8 +818,13 @@ public class UiccCardApplication {
      */
     public void supplyPuk (String puk, String newPin, Message onComplete) {
         synchronized (mLock) {
+        //mCi.supplyIccPukForApp(puk, newPin, mAid,
+        //        mHandler.obtainMessage(EVENT_PIN1_PUK1_DONE, onComplete));
+        // [ALPS01827777]--- START ---
+        if (DBG) log("supplyPuk");
         mCi.supplyIccPukForApp(puk, newPin, mAid,
-                mHandler.obtainMessage(EVENT_PIN1_PUK1_DONE, onComplete));
+                mHandler.obtainMessage(EVENT_PUK1_CHANGE_PIN1_DONE, onComplete));
+        // [ALPS01827777]--- END ---
         }
     }
 
@@ -689,8 +837,12 @@ public class UiccCardApplication {
 
     public void supplyPuk2 (String puk2, String newPin2, Message onComplete) {
         synchronized (mLock) {
+            //mCi.supplyIccPuk2ForApp(puk2, newPin2, mAid,
+            //        mHandler.obtainMessage(EVENT_PIN2_PUK2_DONE, onComplete));
+            // [ALPS01827777]--- START ---
             mCi.supplyIccPuk2ForApp(puk2, newPin2, mAid,
-                    mHandler.obtainMessage(EVENT_PIN2_PUK2_DONE, onComplete));
+                    mHandler.obtainMessage(EVENT_PUK2_CHANGE_PIN2_DONE, onComplete));
+            // [ALPS01827777]--- END ---
         }
     }
 
@@ -739,7 +891,17 @@ public class UiccCardApplication {
      *         false if ICC fdn service not available
      */
     public boolean getIccFdnAvailable() {
-        return mIccFdnAvailable;
+        if (mIccRecords == null) {
+            if (DBG) log("isFdnExist mIccRecords == null");
+            return false;
+        }
+
+        Phone.IccServiceStatus iccSerStatus = mIccRecords.getSIMServiceStatus(Phone.IccService.FDN);
+        if (DBG) log("getIccFdnAvailable status: iccSerStatus");
+        return (iccSerStatus == Phone.IccServiceStatus.ACTIVATED);
+
+
+        //return mIccFdnAvailable;
     }
 
     /**
@@ -865,11 +1027,11 @@ public class UiccCardApplication {
     }
 
     private void log(String msg) {
-        Rlog.d(LOG_TAG, msg);
+        Rlog.d(LOG_TAG, msg + " (slot " + mPhoneId + ")");
     }
 
     private void loge(String msg) {
-        Rlog.e(LOG_TAG, msg);
+        Rlog.e(LOG_TAG, msg + " (slot " + mPhoneId + ")");
     }
 
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
@@ -908,4 +1070,88 @@ public class UiccCardApplication {
         }
         pw.flush();
     }
+
+    // Added by M begin
+    private RegistrantList mFdnChangedRegistrants = new RegistrantList();
+
+    public void registerForFdnChanged(Handler h, int what, Object obj) {
+        synchronized (mLock) {
+            Registrant r = new Registrant(h, what, obj);
+            mFdnChangedRegistrants.add(r);
+        }
+    }
+
+    public void unregisterForFdnChanged(Handler h) {
+        synchronized (mLock) {
+            mFdnChangedRegistrants.remove(h);
+        }
+    }
+
+    public int getSlotId() {
+        return mPhoneId;
+    }
+
+    private void notifyFdnChangedRegistrants() {
+        if (mDestroyed) {
+            return;
+        }
+
+        mFdnChangedRegistrants.notifyRegistrants();
+    }
+
+    public String getIccCardType() {
+         if (mIccType == null || mIccType.equals("")) {
+            mIccType = SystemProperties.get(UICCCARDAPPLICATION_PROPERTY_RIL_UICC_TYPE[mPhoneId]);
+         }
+
+        log("getIccCardType(): mIccType = " + mIccType);
+        return mIccType;
+    }
+
+    //MTK-START [mtk80601][111215][ALPS00093395]
+    /**
+     * Check whether ICC network lock is enabled
+     * This is an async call which returns lock state to applications directly
+     */
+    public void queryIccNetworkLock(int category, Message onComplete) {
+        if (DBG) log("queryIccNetworkLock(): category =  " + category);
+
+        switch(category) {
+            case CommandsInterface.CAT_NETWOEK:
+            case CommandsInterface.CAT_NETOWRK_SUBSET:
+            case CommandsInterface.CAT_CORPORATE:
+            case CommandsInterface.CAT_SERVICE_PROVIDER:
+            case CommandsInterface.CAT_SIM:
+                mCi.queryNetworkLock(category, mHandler.obtainMessage(EVENT_QUERY_NETWORK_LOCK_DONE, onComplete));
+                break;
+            default:
+                Rlog.e(LOG_TAG, "queryIccNetworkLock unknown category = " + category);
+                break;
+        }
+   }
+
+    /**
+     * Set the ICC network lock enabled or disabled
+     * When the operation is complete, onComplete will be sent to its handler
+     */
+    public void setIccNetworkLockEnabled(int category,
+            int lockop, String password, String data_imsi, String gid1, String gid2, Message onComplete) {
+        if (DBG) log("SetIccNetworkEnabled(): category = " + category
+            + " lockop = " + lockop + " password = " + password
+            + " data_imsi = " + data_imsi + " gid1 = " + gid1 + " gid2 = " + gid2);
+
+        switch(lockop) {
+            case CommandsInterface.OP_REMOVE:
+            case CommandsInterface.OP_ADD:
+            case CommandsInterface.OP_LOCK:
+            case CommandsInterface.OP_PERMANENT_UNLOCK:
+            case CommandsInterface.OP_UNLOCK:
+                mCi.setNetworkLock(category, lockop, password, data_imsi, gid1, gid2, mHandler.obtainMessage(EVENT_CHANGE_NETWORK_LOCK_DONE, onComplete));
+                break;
+            default:
+                Rlog.e(LOG_TAG, "SetIccNetworkEnabled unknown operation" + lockop);
+                break;
+        }
+    }
+    // Added by M end
 }

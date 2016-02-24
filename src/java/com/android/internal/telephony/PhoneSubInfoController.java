@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  * Not a Contribution.
@@ -20,6 +25,7 @@ package com.android.internal.telephony;
 
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.Message;
 import android.telephony.SubscriptionManager;
 import android.telephony.Rlog;
 import android.telephony.TelephonyManager;
@@ -88,7 +94,8 @@ public class PhoneSubInfoController extends IPhoneSubInfo.Stub {
         if (phoneSubInfoProxy != null) {
             return phoneSubInfoProxy.getDeviceSvn();
         } else {
-            Rlog.e(TAG,"getDeviceSvn phoneSubInfoProxy is null");
+            Rlog.e(TAG,"getDeviceSvn phoneSubInfoProxy is null" +
+                      " for Subscription:" + subId);
             return null;
         }
     }
@@ -294,4 +301,197 @@ public class PhoneSubInfoController extends IPhoneSubInfo.Stub {
              return null;
          }
      }
+
+    // MTK-START
+    public String getIsimImpiForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimImpi();
+        } else {
+            Rlog.e(TAG,"getIsimImpi phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public String getIsimDomainForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimDomain();
+        } else {
+            Rlog.e(TAG,"getIsimDomain phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public String[] getIsimImpuForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimImpu();
+        } else {
+            Rlog.e(TAG,"getIsimImpu phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public String getIsimIstForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimIst();
+        } else {
+            Rlog.e(TAG,"getIsimIst phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public String[] getIsimPcscfForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimPcscf();
+        } else {
+            Rlog.e(TAG,"getIsimPcscf phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    // ISIM - GBA related support START
+    public String getIsimGbabp() {
+        return getIsimGbabpForSubscriber(getDefaultSubscription());
+    }
+
+    public String getIsimGbabpForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimGbabp();
+        } else {
+            Rlog.e(TAG,"getIsimGbabp phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public void setIsimGbabp(String gbabp, Message onComplete) {
+        setIsimGbabpForSubscriber(getDefaultSubscription(), gbabp, onComplete);
+    }
+
+    public void setIsimGbabpForSubscriber(int subId, String gbabp, Message onComplete) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            phoneSubInfoProxy.setIsimGbabp(gbabp, onComplete);
+        } else {
+            Rlog.e(TAG,"setIsimGbabp phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+        }
+    }
+
+    public boolean getUsimService(int service) {
+        return getUsimServiceForSubscriber(getDefaultSubscription(), service);
+    }
+
+    public boolean getUsimServiceForSubscriber(int subId, int service) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getUsimService(service);
+        } else {
+            Rlog.e(TAG,"getUsimService phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return false;
+        }
+    }
+
+    public String getUsimGbabp() {
+        return getUsimGbabpForSubscriber(getDefaultSubscription());
+    }
+
+    public String getUsimGbabpForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getUsimGbabp();
+        } else {
+            Rlog.e(TAG,"getUsimGbabp phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public void setUsimGbabp(String gbabp, Message onComplete) {
+        setUsimGbabpForSubscriber(getDefaultSubscription(), gbabp, onComplete);
+    }
+
+    public void setUsimGbabpForSubscriber(int subId, String gbabp, Message onComplete) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            phoneSubInfoProxy.setUsimGbabp(gbabp, onComplete);
+        } else {
+            Rlog.e(TAG,"setUsimGbabp phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+        }
+    }
+    // ISIM - GBA related support END
+
+    public byte[] getIsimPsismsc() {
+        return getIsimPsismscForSubscriber(getDefaultSubscription());
+    }
+
+    public byte[] getIsimPsismscForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getIsimPsismsc();
+        } else {
+            Rlog.e(TAG,"getIsimPsismsc phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public byte[] getUsimPsismsc() {
+        return getUsimPsismscForSubscriber(getDefaultSubscription());
+    }
+
+    public byte[] getUsimPsismscForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getUsimPsismsc();
+        } else {
+            Rlog.e(TAG,"getUsimPsismsc phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public byte[] getUsimSmsp() {
+        return getUsimSmspForSubscriber(getDefaultSubscription());
+    }
+
+    public byte[] getUsimSmspForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getUsimSmsp();
+        } else {
+            Rlog.e(TAG,"getUsimSmsp phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return null;
+        }
+    }
+
+    public int getMncLength() {
+        return getMncLengthForSubscriber(getDefaultSubscription());
+    }
+
+    public int getMncLengthForSubscriber(int subId) {
+        PhoneSubInfoProxy phoneSubInfoProxy = getPhoneSubInfoProxy(subId);
+        if (phoneSubInfoProxy != null) {
+            return phoneSubInfoProxy.getMncLength();
+        } else {
+            Rlog.e(TAG,"getMncLength phoneSubInfoProxy is" +
+                      " null for Subscription:" + subId);
+            return 0;
+        }
+    }
+
+    // MTK-END
 }

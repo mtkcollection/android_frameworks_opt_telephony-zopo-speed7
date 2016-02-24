@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006-2007 Google Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
@@ -23,8 +28,17 @@ import com.android.internal.telephony.uicc.IccUtils;
 import android.content.res.Resources;
 import android.content.res.Resources.NotFoundException;
 import java.io.UnsupportedEncodingException;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
+
+import com.android.internal.telephony.cat.bip.OtherAddress;
+import com.android.internal.telephony.cat.bip.BipUtils;
+import com.android.internal.telephony.cat.bip.TransportProtocol;
+import com.android.internal.telephony.cat.bip.BearerDesc;
+import com.android.internal.telephony.cat.bip.DefaultBearerDesc;
+import com.android.internal.telephony.cat.bip.EUTranBearerDesc;
+import com.android.internal.telephony.cat.bip.GPRSBearerDesc;
 
 abstract class ValueParser {
 
@@ -119,15 +133,67 @@ abstract class ValueParser {
 
             try {
                 int id = rawValue[valueIndex] & 0xff;
+                // textLen = checkItemString(rawValue, valueIndex + 1, textLen);
+                textLen = removeInvalidCharInItemTextString(rawValue, valueIndex, textLen);
                 String text = IccUtils.adnStringFieldToString(rawValue,
                         valueIndex + 1, textLen);
                 item = new Item(id, text);
             } catch (IndexOutOfBoundsException e) {
-                throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+                //throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+                CatLog.d("ValueParser", "retrieveItem fail");
             }
         }
 
         return item;
+    }
+
+    static int removeInvalidCharInItemTextString(byte[] rawValue, int valueIndex, int textLen)
+    {
+        Boolean isucs2 = false;
+        int len = textLen;
+        CatLog.d("ValueParser", "Try to remove invalid raw data 0xf0, valueIndex: " + valueIndex + ", textLen: " + textLen);
+        if (textLen >= 1 && rawValue[valueIndex + 1] == (byte) 0x80 ||
+            textLen >= 3 && rawValue[valueIndex + 1] == (byte) 0x81 ||
+            textLen >= 4 && rawValue[valueIndex + 1] == (byte) 0x82)
+        {
+            /* The text string format is UCS2 */
+            isucs2 = true;
+        }
+        CatLog.d("ValueParser", "Is the text string format UCS2? " + isucs2);
+        if (!isucs2 && textLen > 0)
+        {
+            /* Remove invalid char only when it is not UCS2 format */
+            for (int i = textLen; i > 0; i -= 1) {
+                if (rawValue[valueIndex + i] == (byte) 0xF0) {
+                    CatLog.d("ValueParser", "find invalid raw data 0xf0");
+                    len -= 1;
+                }
+                else
+                    break;
+            }
+        }
+        CatLog.d("ValueParser", "new textLen: " + len);
+        return len;
+    }
+
+    static int checkItemString(byte[] raw, int offset, int length) {
+        if ((raw[offset] & 0xff) != 0x80) {
+            // non-ucs2
+            CatLog.d("ValueParser", "don't do check for non-ucs2 raw data");
+            return length;
+        }
+
+        int len = length;
+        CatLog.d("ValueParser", "given length is " + length);
+        for (int i = raw.length - 1; i > offset; i -= 2) {
+            if ((raw[i] & 0xff) == 0 && (raw[i - 1] & 0xff) == 0) {
+                CatLog.d("ValueParser", "find invalid raw data 0x00");
+                len -= 2;
+            }
+        }
+
+        CatLog.d("ValueParser", "useful length is " + length);
+        return len;
     }
 
     /**
@@ -288,7 +354,7 @@ abstract class ValueParser {
                 }
             } else {
                 CatLog.d("ValueParser", "Alpha Id length=" + length);
-                return null;
+                return "";
             }
         } else {
             /* Per 3GPP specification 102.223,
@@ -353,5 +419,242 @@ abstract class ValueParser {
             // This should never happen.
             throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
         }
+    }
+
+    // Add by Huibin Mao Mtk80229
+    // ICS Migration start
+
+    static BearerDesc retrieveBearerDesc(ComprehensionTlv ctlv) throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int length = ctlv.getLength();
+        BearerDesc bearerDesc = null;
+        GPRSBearerDesc gprsbearerDesc = null;
+        EUTranBearerDesc euTranbearerDesc = null;
+        DefaultBearerDesc defaultbearerDesc = null;
+        try {
+            int bearerType = rawValue[valueIndex++] & 0xff;
+            CatLog.d("CAT", "retrieveBearerDesc: bearerType:" + bearerType + ", length: " + length);
+            if (BipUtils.BEARER_TYPE_GPRS == bearerType) {
+                gprsbearerDesc = new GPRSBearerDesc();
+                gprsbearerDesc.precedence = rawValue[valueIndex++] & 0xff;
+                gprsbearerDesc.delay = rawValue[valueIndex++] & 0xff;
+                gprsbearerDesc.reliability = rawValue[valueIndex++] & 0xff;
+                gprsbearerDesc.peak = rawValue[valueIndex++] & 0xff;
+                gprsbearerDesc.mean = rawValue[valueIndex++] & 0xff;
+                gprsbearerDesc.pdpType = rawValue[valueIndex++] & 0xff;
+                return gprsbearerDesc;
+            } else if (BipUtils.BEARER_TYPE_EUTRAN == bearerType) {
+                euTranbearerDesc = new EUTranBearerDesc();
+                euTranbearerDesc.QCI = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.maxBitRateU = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.maxBitRateD = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.guarBitRateU = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.guarBitRateD = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.maxBitRateUEx = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.maxBitRateDEx = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.guarBitRateUEx = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.guarBitRateDEx = rawValue[valueIndex++] & 0xff;
+                euTranbearerDesc.pdnType = rawValue[valueIndex++] & 0xff;
+                return euTranbearerDesc;
+            } else if (BipUtils.BEARER_TYPE_DEFAULT == bearerType) {
+                defaultbearerDesc = new DefaultBearerDesc();
+                return defaultbearerDesc;
+            } else if (BipUtils.BEARER_TYPE_CSD == bearerType) {
+                CatLog.d("CAT", "retrieveBearerDesc: unsupport CSD");
+                throw new ResultException(ResultCode.BEYOND_TERMINAL_CAPABILITY);
+            } else {
+                CatLog.d("CAT", "retrieveBearerDesc: un-understood bearer type");
+                throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+            }
+        } catch (IndexOutOfBoundsException e) {
+            CatLog.d("CAT", "retrieveBearerDesc: out of bounds");
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+    }
+
+    static int retrieveBufferSize(ComprehensionTlv ctlv) throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int size = 0;
+
+        try {
+            size = ((rawValue[valueIndex] & 0xff) << 8) + (rawValue[valueIndex + 1] & 0xff);
+        } catch (IndexOutOfBoundsException e) {
+            CatLog.d("CAT", "retrieveBufferSize: out of bounds");
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return size;
+    }
+
+        static String retrieveNetworkAccessName(ComprehensionTlv ctlv) throws ResultException {
+            byte[] rawValue = ctlv.getRawValue();
+            int valueIndex = ctlv.getValueIndex();
+            String networkAccessName = null;
+
+            try {
+            // int len = ctlv.getLength() - ctlv.getValueIndex() + 1;
+                int totalLen = ctlv.getLength();
+                String stkNetworkAccessName = new String(rawValue, valueIndex, totalLen);
+                String stkNetworkIdentifier = null;
+                String stkOperatorIdentifier = null;
+
+                if (stkNetworkAccessName != null && totalLen > 0) {
+                //Get network identifier
+                    int len = rawValue[valueIndex++];
+                    if (totalLen > len) {
+                          stkNetworkIdentifier = new String(rawValue, valueIndex, len);
+                          valueIndex += len;
+                    }
+                    CatLog.d("CAT", "totalLen:" + totalLen + ";" + valueIndex + ";" + len);
+                    //Get operator identififer
+                    String tmp_string = null;
+                    while (totalLen > (len + 1)) {
+                        totalLen -= (len + 1);
+                        len = rawValue[valueIndex++];
+                        CatLog.d("CAT", "next len: " + len);
+                        if (totalLen > len) {
+                            tmp_string = new String(rawValue, valueIndex, len);
+                            if (stkOperatorIdentifier == null)
+                                stkOperatorIdentifier = tmp_string;
+                            else
+                                stkOperatorIdentifier = stkOperatorIdentifier + "." + tmp_string;
+                            tmp_string = null;
+                        }
+                        valueIndex += len;
+                        CatLog.d("CAT", "totalLen:" + totalLen + ";" + valueIndex + ";" + len);
+                    }
+
+                    if (stkNetworkIdentifier != null && stkOperatorIdentifier != null) {
+                        networkAccessName = stkNetworkIdentifier + "." + stkOperatorIdentifier;
+                    } else if (stkNetworkIdentifier != null) {
+                        networkAccessName = stkNetworkIdentifier;
+                    }
+                    CatLog.d("CAT", "nw:" + stkNetworkIdentifier + ";" + stkOperatorIdentifier);
+                }
+            } catch (IndexOutOfBoundsException e) {
+                CatLog.d("CAT", "retrieveNetworkAccessName: out of bounds");
+                throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+            }
+
+            return networkAccessName;
+        }
+
+    static TransportProtocol retrieveTransportProtocol(ComprehensionTlv ctlv)
+            throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int protocolType = 0;
+        int portNumber = 0;
+
+        try {
+            protocolType = rawValue[valueIndex++];
+            portNumber = ((rawValue[valueIndex] & 0xff) << 8) + (rawValue[valueIndex + 1] & 0xff);
+        } catch (IndexOutOfBoundsException e) {
+            CatLog.d("CAT", "retrieveTransportProtocol: out of bounds");
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return new TransportProtocol(protocolType, portNumber);
+    }
+
+    static OtherAddress retrieveOtherAddress(ComprehensionTlv ctlv) throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int addressType = 0;
+        OtherAddress otherAddress = null;
+
+        try {
+            addressType = rawValue[valueIndex++];
+            if (BipUtils.ADDRESS_TYPE_IPV4 == addressType) {
+                otherAddress = new OtherAddress(addressType, rawValue, valueIndex);
+            } else if (BipUtils.ADDRESS_TYPE_IPV6 == addressType) {
+                return null;
+                // throw new
+                // ResultException(ResultCode.BEYOND_TERMINAL_CAPABILITY);
+            } else {
+                return null;
+                // throw new
+                // ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+            }
+        } catch (IndexOutOfBoundsException e) {
+            CatLog.d("CAT", "retrieveOtherAddress: out of bounds");
+            return null;
+            // throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        } catch (UnknownHostException e2) {
+            CatLog.d("CAT", "retrieveOtherAddress: unknown host");
+            return null;
+            // throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return otherAddress;
+    }
+
+    static int retrieveChannelDataLength(ComprehensionTlv ctlv) throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int length = 0;
+
+        CatLog.d("CAT", "valueIndex:" + valueIndex);
+
+        try {
+            length = rawValue[valueIndex] & 0xFF;
+        } catch (IndexOutOfBoundsException e) {
+            CatLog.d("CAT", "retrieveTransportProtocol: out of bounds");
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return length;
+    }
+
+    static byte[] retrieveChannelData(ComprehensionTlv ctlv) throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        byte[] channelData = null;
+
+        try {
+            channelData = new byte[ctlv.getLength()];
+            System.arraycopy(rawValue, valueIndex, channelData, 0, channelData.length);
+        } catch (IndexOutOfBoundsException e) {
+            CatLog.d("CAT", "retrieveChannelData: out of bounds");
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return channelData;
+    }
+
+    static byte[] retrieveNextActionIndicator(ComprehensionTlv ctlv) throws ResultException {
+        byte[] nai;
+
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int length = ctlv.getLength();
+
+        nai = new byte[length];
+        try {
+            for (int index = 0; index < length; ) {
+                nai[index++] = rawValue[valueIndex++];
+            }
+        } catch (IndexOutOfBoundsException e) {
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return nai;
+    }
+    // ICS Migration end
+
+    static int retrieveTarget(ComprehensionTlv ctlv) throws ResultException {
+        byte[] rawValue = ctlv.getRawValue();
+        int valueIndex = ctlv.getValueIndex();
+        int target = 0;
+
+        try {
+            target = rawValue[valueIndex] & 0xff;
+        } catch (IndexOutOfBoundsException e) {
+            throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD);
+        }
+
+        return target;
     }
 }

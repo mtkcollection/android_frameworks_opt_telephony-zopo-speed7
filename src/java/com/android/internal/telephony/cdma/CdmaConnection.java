@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,12 +30,15 @@ import android.os.Message;
 import android.os.PowerManager;
 import android.os.Registrant;
 import android.os.SystemClock;
+import android.os.Vibrator;
 import android.telephony.DisconnectCause;
 import android.telephony.Rlog;
 import android.text.TextUtils;
 
 import android.telephony.PhoneNumberUtils;
 import android.telephony.ServiceState;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
@@ -68,6 +76,13 @@ public class CdmaConnection extends Connection {
     Handler mHandler;
 
     private PowerManager.WakeLock mPartialWakeLock;
+
+    /// M: @{
+    boolean mIsVideo;    // for video call
+    boolean mIsRealConnected; // indicate if the MO call has been accepted by remote side
+    long mRealAcceptTime;    // real accept time
+    private static final int MO_CALL_VIBRATE_TIME = 300;  // msec
+    /// @}
 
     //***** Event Constants
     static final int EVENT_DTMF_DONE = 1;
@@ -124,6 +139,10 @@ public class CdmaConnection extends Connection {
 
         mParent = parentFromDCState (dc.state);
         mParent.attach(this, dc);
+
+        /// M: @{
+        mRealAcceptTime = 0;
+        /// @}
     }
 
     /** This is an MO call/three way call, created when dialing */
@@ -161,6 +180,11 @@ public class CdmaConnection extends Connection {
                 parent.attachFake(this, CdmaCall.State.DIALING);
             }
         }
+
+        /// M: @{
+        mIsRealConnected = false; // indicated if remote side has answered the MO call(CTA case)
+        mRealAcceptTime = 0;
+        /// @}
     }
 
     /** This is a Call waiting call*/
@@ -181,6 +205,11 @@ public class CdmaConnection extends Connection {
         mConnectTime = 0;
         mParent = parent;
         parent.attachFake(this, CdmaCall.State.WAITING);
+
+        /// M: @{
+        Rlog.d(LOG_TAG, "Create for call waiting, mAddress = " + mAddress);
+        mRealAcceptTime = 0;
+        /// @}
     }
 
     public void dispose() {
@@ -377,12 +406,34 @@ public class CdmaConnection extends Connection {
             default:
                 CDMAPhone phone = mOwner.mPhone;
                 int serviceState = phone.getServiceState().getState();
-                UiccCardApplication app = UiccController
+                /// M: @{
+                AppState uiccAppState = AppState.APPSTATE_UNKNOWN;
+                if (UiccController.getInstance() != null) {
+                    UiccCardApplication tempApplication = UiccController
                         .getInstance()
                         .getUiccCardApplication(phone.getPhoneId(), UiccController.APP_FAM_3GPP2);
-                AppState uiccAppState = (app != null) ? app.getState() : AppState.APPSTATE_UNKNOWN;
+                    if (tempApplication != null) {
+                        uiccAppState = tempApplication.getState();
+                    } else {
+                        log("tempApplication is null");
+                    }
+                } else {
+                    log("UiccController.getInstance() is null");
+                }
+                int subId = SubscriptionManager.getSubIdUsingPhoneId(phone.getPhoneId());
+                int simState = SubscriptionManager.getSimStateForSubscriber(subId);
+                log("disconnectCauseFromCode, causeCode:" + causeCode
+                    + ", serviceState:" + serviceState
+                    + ", uiccAppState:" + uiccAppState
+                    + ", simState:" + simState);
+                /// @}
                 if (serviceState == ServiceState.STATE_POWER_OFF) {
                     return DisconnectCause.POWER_OFF;
+                } else if (causeCode == CallFailCause.NORMAL_CLEARING
+                        && PhoneNumberUtils.isEmergencyNumber(getAddress())
+                        && (simState == TelephonyManager.SIM_STATE_ABSENT
+                            || simState == TelephonyManager.SIM_STATE_PIN_REQUIRED)) {
+                    return DisconnectCause.NORMAL;
                 } else if (serviceState == ServiceState.STATE_OUT_OF_SERVICE
                         || serviceState == ServiceState.STATE_EMERGENCY_ONLY) {
                     return DisconnectCause.OUT_OF_SERVICE;
@@ -390,7 +441,7 @@ public class CdmaConnection extends Connection {
                         CdmaSubscriptionSourceManager.SUBSCRIPTION_FROM_RUIM
                         && uiccAppState != AppState.APPSTATE_READY) {
                     return DisconnectCause.ICC_ERROR;
-                } else if (causeCode==CallFailCause.NORMAL_CLEARING) {
+                } else if (causeCode == CallFailCause.NORMAL_CLEARING) {
                     return DisconnectCause.NORMAL;
                 } else {
                     return DisconnectCause.ERROR_UNSPECIFIED;
@@ -458,8 +509,19 @@ public class CdmaConnection extends Connection {
         if (!equalsHandlesNulls(mAddress, dc.number) && (!mNumberConverted
                 || !equalsHandlesNulls(mConvertedNumber, dc.number)))  {
             if (Phone.DEBUG_PHONE) log("update: phone # changed!");
-            mAddress = dc.number;
-            changed = true;
+            /// M: @{
+            // for pluscode transfer
+            String number = dc.number;
+            if (mAddress != null && mAddress.length() > 0
+                && mAddress.startsWith("+") && !number.startsWith("+")) {
+                // do not update number according because pluscode transfer
+                log("update: do not update number according because pluscode transfer!");
+            } else {
+                log("update: update number because number changed by network!");
+                mAddress = dc.number;
+                changed = true;
+            }
+            /// @}
         }
 
         // A null cnapName should be the same as ""
@@ -555,7 +617,14 @@ public class CdmaConnection extends Connection {
 
         if (!mIsIncoming) {
             // outgoing calls only
-            processNextPostDialChar();
+            /// M: @{
+            // send DTMF when the CDMAcall is really accepted.
+            if (!isInChina() && !mIsRealConnected) {
+                mIsRealConnected = true;
+                processNextPostDialChar();
+                vibrateForAccepted();
+            }
+            /// @}
         } else {
             // Only release wake lock for incoming calls, for outgoing calls the wake lock
             // will be released after any pause-dial is completed
@@ -777,14 +846,14 @@ public class CdmaConnection extends Connection {
     }
 
     private void acquireWakeLock() {
-        log("acquireWakeLock");
+        log("acquireWakeLock, " + hashCode());
         mPartialWakeLock.acquire();
     }
 
     private void releaseWakeLock() {
         synchronized (mPartialWakeLock) {
             if (mPartialWakeLock.isHeld()) {
-                log("releaseWakeLock");
+                log("releaseWakeLock, " + hashCode());
                 mPartialWakeLock.release();
             }
         }
@@ -935,4 +1004,91 @@ public class CdmaConnection extends Connection {
     public boolean isMultiparty() {
         return false;
     }
+
+    /// M: @{
+    /**
+     * @param discRingingConnCause a disconnect cause
+     * @throws CallStateException
+     */
+    @Override
+    public void hangup(int discRingingConnCause) throws CallStateException {
+        if (!mDisconnected) {
+            mOwner.hangup(this);
+            /* Only for RingingCall's connection to provide this interface */
+            if (mParent == mOwner.mRingingCall && mOwner.mRingingCall.hasConnection(this)) {
+                mCause = discRingingConnCause;
+                log("hangup RingingConn with cause = " + discRingingConnCause
+                    + ", and ringCall state = " + mParent.mState);
+                if (mParent.mState == Call.State.INCOMING || mParent.mState == Call.State.WAITING) {
+                    mParent.mState = Call.State.DISCONNECTING;
+                }
+            }
+        } else {
+            throw new CallStateException("disconnected");
+        }
+    }
+
+    public boolean isVideo() {
+        return mIsVideo;
+    }
+
+    public boolean isRealConnected() {
+        return mIsRealConnected;
+    }
+
+    // register CDMA call accepted message
+    boolean onCdmaCallAccept() {
+        Rlog.d(LOG_TAG, "onCdmaCallAccept, mIsRealConnected:" + mIsRealConnected);
+        if (!mIsRealConnected) {
+            mConnectTimeReal = SystemClock.elapsedRealtime();
+            mDuration = 0;
+            mConnectTime = System.currentTimeMillis();
+            mIsRealConnected = true;
+            // send DTMF when the CDMAcall is really accepted.
+            processNextPostDialChar();
+            vibrateForAccepted();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // get and set real accept time
+    public void setRealAcceptTime(long time) {
+        mRealAcceptTime = time;
+    }
+
+    public long getRealAcceptTime() {
+        return mRealAcceptTime;
+    }
+
+    /*package*/ boolean
+    onDisconnectByMom(int cause) {
+        boolean changed = false;
+        mCause = cause;
+        if (!mDisconnected) {
+            doDisconnect();
+            if (VDBG) { Rlog.d(LOG_TAG, "onDisconnectByMom: cause=" + cause); }
+            if (mParent != null) {
+                changed = mParent.connectionDisconnected(this);
+            }
+        }
+        releaseWakeLock();
+        return changed;
+    }
+
+    private boolean isInChina() {
+        TelephonyManager tm = TelephonyManager.getDefault();
+        String numeric = tm.getNetworkOperatorForPhone(mOwner.mPhone.getPhoneId());
+        Rlog.d(LOG_TAG, "isInChina, numeric:" + numeric);
+        return numeric.indexOf("460") == 0;
+    }
+
+    private void vibrateForAccepted() {
+        //if CDMA phone accepted, start a Vibrator
+        Vibrator vibrator = (Vibrator) mOwner.mPhone.getContext().getSystemService(
+                            Context.VIBRATOR_SERVICE);
+        vibrator.vibrate(MO_CALL_VIBRATE_TIME);
+    }
+    /// @}
 }

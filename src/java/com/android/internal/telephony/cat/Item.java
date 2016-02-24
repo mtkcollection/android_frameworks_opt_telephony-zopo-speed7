@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,6 +40,8 @@ public class Item implements Parcelable {
 
     public Item(int id, String text) {
         this(id, text, null);
+        this.id = id;
+        this.text = text;
     }
 
     public Item(int id, String text, Bitmap icon) {

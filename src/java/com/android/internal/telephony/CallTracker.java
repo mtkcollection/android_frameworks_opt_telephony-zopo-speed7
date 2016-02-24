@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,7 +38,7 @@ import java.util.ArrayList;
  */
 public abstract class CallTracker extends Handler {
 
-    private static final boolean DBG_POLL = false;
+    private static final boolean DBG_POLL = true;
 
     //***** Constants
 
@@ -68,6 +73,24 @@ public abstract class CallTracker extends Handler {
     protected static final int EVENT_THREE_WAY_DIAL_L2_RESULT_CDMA = 16;
     protected static final int EVENT_THREE_WAY_DIAL_BLANK_FLASH    = 20;
 
+    /// M: CC010: Add RIL interface @{
+    protected static final int EVENT_HANG_UP_RESULT                = 21;
+    protected static final int EVENT_DIAL_CALL_RESULT              = 22;
+    protected static final int EVENT_RADIO_OFF_OR_NOT_AVAILABLE    = 23;
+    protected static final int EVENT_INCOMING_CALL_INDICATION      = 24;
+    protected static final int EVENT_CNAP_INDICATION               = 25;
+    protected static final int EVENT_SPEECH_CODEC_INFO             = 26;
+    /// @}
+    protected static final int EVENT_CDMA_CALL_ACCEPTED            = 27;
+    protected static final int EVENT_CDMA_DIAL_THREEWAY_DELAY      = 28;
+    protected static final int EVENT_EXIT_ECM_RESPONSE_DIAL_THREEWAY = 29;
+    ///M: IMS conference call feature. @{
+    protected static final int EVENT_ECONF_SRVCC_INDICATION = 30;
+    protected static final int EVENT_ECONF_RESULT_INDICATION = 31;
+    protected static final int EVENT_RETRIEVE_HELD_CALL_RESULT = 32;
+    protected static final int EVENT_CALL_INFO_INDICATION = 33;
+    /// @}
+    
     protected void pollCallsWhenSafe() {
         mNeedsPoll = true;
 
@@ -95,13 +118,20 @@ public abstract class CallTracker extends Handler {
     protected abstract void handlePollCalls(AsyncResult ar);
 
     protected Connection getHoConnection(DriverCall dc) {
-        for (Connection hoConn : mHandoverConnections) {
-            log("getHoConnection - compare number: hoConn= " + hoConn.toString());
-            if (hoConn.getAddress() != null && hoConn.getAddress().contains(dc.number)) {
-                log("getHoConnection: Handover connection match found = " + hoConn.toString());
-                return hoConn;
+        /// M: ALPS01995466. JE because dc.number is null. @{
+        log("SRVCC: getHoConnection() with dc, number = " + dc.number + " state = " + dc.state);
+
+        if (dc.number != null && !dc.number.isEmpty()) {
+            /// @}
+            for (Connection hoConn : mHandoverConnections) {
+                log("getHoConnection - compare number: hoConn= " + hoConn.toString());
+                if (hoConn.getAddress() != null && hoConn.getAddress().contains(dc.number)) {
+                    log("getHoConnection: Handover connection match found = " + hoConn.toString());
+                    return hoConn;
+                }
             }
         }
+
         for (Connection hoConn : mHandoverConnections) {
             log("getHoConnection: compare state hoConn= " + hoConn.toString());
             if (hoConn.getStateBeforeHandover() == Call.stateFromDCState(dc.state)) {

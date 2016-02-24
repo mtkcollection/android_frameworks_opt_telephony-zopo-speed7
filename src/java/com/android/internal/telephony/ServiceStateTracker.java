@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -53,6 +58,10 @@ import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
 
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteServiceStateTracker;
+import com.mediatek.internal.telephony.RadioManager;
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+
 /**
  * {@hide}
  */
@@ -71,6 +80,8 @@ public abstract class ServiceStateTracker extends Handler {
     protected PhoneBase mPhoneBase;
 
     protected boolean mVoiceCapable;
+    //[ALPS01803573] - for 4gds/3gds tablet project
+    protected boolean mSmsCapable;
 
     public ServiceState mSS = new ServiceState();
     protected ServiceState mNewSS = new ServiceState();
@@ -78,6 +89,9 @@ public abstract class ServiceStateTracker extends Handler {
     private static final long LAST_CELL_INFO_LIST_MAX_AGE_MS = 2000;
     protected long mLastCellInfoListTime;
     protected List<CellInfo> mLastCellInfoList = null;
+
+    // M: Report CellInfo by rate was done by polling cell info from framework by rate
+    protected int mCellInfoRate = Integer.MAX_VALUE;
 
     // This is final as subclasses alias to a more specific type
     // so we don't want the reference to change.
@@ -120,12 +134,16 @@ public abstract class ServiceStateTracker extends Handler {
     protected RegistrantList mPsRestrictEnabledRegistrants = new RegistrantList();
     protected RegistrantList mPsRestrictDisabledRegistrants = new RegistrantList();
 
+    protected RegistrantList mSignalStrengthChangedRegistrants = new RegistrantList();
+
     /* Radio power off pending flag and tag counter */
     protected boolean mPendingRadioPowerOffAfterDataOff = false;
     protected int mPendingRadioPowerOffAfterDataOffTag = 0;
 
+    //MTK-START Replace 20 with 10
     /** Signal strength poll rate. */
-    protected static final int POLL_PERIOD_MILLIS = 20 * 1000;
+    protected static final int POLL_PERIOD_MILLIS = 10 * 1000;
+    //MTK-END Replace 20 with 10
 
     /** Waiting period before recheck gprs and voice registration. */
     public static final int DEFAULT_GPRS_CHECK_PERIOD_MILLIS = 60 * 1000;
@@ -178,6 +196,35 @@ public abstract class ServiceStateTracker extends Handler {
     protected static final int EVENT_IMS_STATE_CHANGED                 = 46;
     protected static final int EVENT_IMS_STATE_DONE                    = 47;
 
+    /* M: MTK added events begin*/
+    protected static final int EVENT_DATA_CONNECTION_DETACHED = 100;
+    protected static final int EVENT_INVALID_SIM_INFO = 101; //ALPS00248788
+    protected static final int EVENT_PS_NETWORK_STATE_CHANGED = 102;
+    protected static final int EVENT_IMEI_LOCK = 103; /* ALPS00296298 */
+    protected static final int EVENT_DISABLE_EMMRRS_STATUS = 104;
+    protected static final int EVENT_ENABLE_EMMRRS_STATUS = 105;
+    protected static final int EVENT_ICC_REFRESH = 106;
+    protected static final int EVENT_FEMTO_CELL_INFO = 107;
+    protected static final int EVENT_GET_CELL_INFO_LIST_BY_RATE = 108;
+    protected static final int EVENT_SET_IMS_ENABLED_DONE = 109;
+    protected static final int EVENT_SET_IMS_DISABLE_DONE = 110;
+    protected static final int EVENT_IMS_DISABLED_URC = 111;
+    protected static final int EVENT_IMS_REGISTRATION_INFO = 112;
+    protected static final int EVENT_PS_NETWORK_TYPE_CHANGED = 113;
+    /* MTK added events end*/
+
+    /// M: c2k modify, event constants. @{
+    protected static final int EVENT_QUERY_NITZ_TIME        = 200;
+    protected static final int EVENT_GET_NITZ_TIME          = 201;
+    protected static final int EVENT_NETWORK_TYPE_CHANGED   = 202;
+    protected static final int EVENT_ETS_DEV_CHANGED        = 203;
+    protected static final int EVENT_SET_MDN_DONE           = 204;
+
+    ///M: for changed the mtklogger
+    protected static final int EVENT_ETS_DEV_CHANGED_LOGGER = 205;
+    /// @}
+    ///M: Add for get the c2k subscription.
+    protected static final int EVENT_CDMA_IMSI_READY_TO_QUERY = 206;
     protected static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
 
     /**
@@ -248,14 +295,16 @@ public abstract class ServiceStateTracker extends Handler {
          */
         @Override
         public void onSubscriptionsChanged() {
-            if (DBG) log("SubscriptionListener.onSubscriptionInfoChanged");
             // Set the network type, in case the radio does not restore it.
             int subId = mPhoneBase.getSubId();
+            if (DBG) log("SubscriptionListener.onSubscriptionInfoChanged start,isReady= "
+                          + mSubscriptionController.isReady()+" ,subId=" + subId +"");
             if (mPreviousSubId.getAndSet(subId) != subId) {
                 if (SubscriptionManager.isValidSubscriptionId(subId)) {
+                    /* AOSP assume onSubscriptionsChanged imply sub ready. But setPlmnSpn might return false and trigger notifySub Changed when sub not ready */
+                    //if(mSubscriptionController.isReady()) {
                     Context context = mPhoneBase.getContext();
-                    int networkType = PhoneFactory.calculatePreferredNetworkType(context, subId);
-                    mCi.setPreferredNetworkType(networkType, null);
+                    setDeviceRatMode(mPhoneBase.getPhoneId());
 
                     mPhoneBase.notifyCallForwardingIndicator();
 
@@ -269,11 +318,22 @@ public abstract class ServiceStateTracker extends Handler {
                     mPhoneBase.setSystemProperty(TelephonyProperties.PROPERTY_DATA_NETWORK_TYPE,
                         ServiceState.rilRadioTechnologyToString(mSS.getRilDataRadioTechnology()));
 
-                    if (mSpnUpdatePending) {
-                        mSubscriptionController.setPlmnSpn(mPhoneBase.getPhoneId(), mCurShowPlmn,
-                                mCurPlmn, mCurShowSpn, mCurSpn);
-                        mSpnUpdatePending = false;
-                    }
+                    //int phoneId = mPhoneBase.getPhoneId();
+                    //log("phoneId= "+ phoneId +" ,mSpnUpdatePending= "+ mSpnUpdatePending);
+
+                    //if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        //FIX ME: shall consider SIM switch case
+                    //    if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID) {
+                    //        phoneId = PhoneConstants.SIM_ID_1;
+                    //        log("phoneId is converted to " + phoneId);
+                    //    }
+                    //}
+
+                    //if (mSpnUpdatePending) {
+                    //    mSubscriptionController.setPlmnSpn(phoneId, mCurShowPlmn,
+                    //            mCurPlmn, mCurShowSpn, mCurSpn);
+                    //    mSpnUpdatePending = false;
+                    //}
 
                     // Remove old network selection sharedPreferences since SP key names are now
                     // changed to include subId. This will be done only once when upgrading from an
@@ -295,8 +355,28 @@ public abstract class ServiceStateTracker extends Handler {
                         editor.remove(PhoneBase.NETWORK_SELECTION_KEY);
                         editor.commit();
                     }
+                    //}
                 }
             }
+            if (mSubscriptionController.isReady()) {
+                int phoneId = mPhoneBase.getPhoneId();
+                log("phoneId= "+ phoneId +" ,mSpnUpdatePending= "+ mSpnUpdatePending);
+
+                if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                    //FIX ME: shall consider SIM switch case
+                    if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID) {
+                        phoneId = PhoneConstants.SIM_ID_1;
+                        log("phoneId is converted to " + phoneId);
+                    }
+                }
+
+                if (mSpnUpdatePending) {
+                    mSubscriptionController.setPlmnSpn(phoneId, mCurShowPlmn,
+                            mCurPlmn, mCurShowSpn, mCurSpn);
+                    mSpnUpdatePending = false;
+                }
+            }
+            log("SubscriptionListener.onSubscriptionInfoChanged end, subId= "+ subId);
         }
     };
 
@@ -306,6 +386,9 @@ public abstract class ServiceStateTracker extends Handler {
         mCi = ci;
         mVoiceCapable = mPhoneBase.getContext().getResources().getBoolean(
                 com.android.internal.R.bool.config_voice_capable);
+        //[ALPS01803573] - for 4gds/3gds tablet project
+        mSmsCapable = mPhoneBase.getContext().getResources().getBoolean(
+                com.android.internal.R.bool.config_sms_capable);
         mUiccController = UiccController.getInstance();
         mUiccController.registerForIccChanged(this, EVENT_ICC_CHANGED, null);
         mCi.setOnSignalStrengthUpdate(this, EVENT_SIGNAL_STRENGTH_UPDATE, null);
@@ -325,7 +408,11 @@ public abstract class ServiceStateTracker extends Handler {
         if (mDeviceShuttingDown == true) return;
         mDeviceShuttingDown = true;
         mDesiredPowerState = false;
-        setPowerStateToDesired();
+        //setPowerStateToDesired();
+
+        // We need to shut down modem in our solution
+        int phoneId = getPhone().getPhoneId();
+        RadioManager.getInstance().setModemPower(false, (1<<phoneId));
     }
 
     public void dispose() {
@@ -340,13 +427,18 @@ public abstract class ServiceStateTracker extends Handler {
         return mDesiredPowerState;
     }
 
-    private SignalStrength mLastSignalStrength = null;
+    protected SignalStrength mLastSignalStrength = null;
     protected boolean notifySignalStrength() {
         boolean notified = false;
         synchronized(mCellInfo) {
             if (!mSignalStrength.equals(mLastSignalStrength)) {
                 try {
+                    if (DBG) {
+                        log("notifySignalStrength: mSignalStrength.getLevel=" +
+                                mSignalStrength.getLevel());
+                    }
                     mPhoneBase.notifySignalStrength();
+                    mLastSignalStrength = new SignalStrength(mSignalStrength);
                     notified = true;
                 } catch (NullPointerException ex) {
                     loge("updateSignalStrength() Phone already destroyed: " + ex
@@ -376,13 +468,18 @@ public abstract class ServiceStateTracker extends Handler {
      * data only devices, to fix that use DataRegState.
      */
     protected void useDataRegStateForDataOnlyDevices() {
-        if (mVoiceCapable == false) {
+        //[ALPS01803573] - for 4gds/3gds tablet project
+        //if (mVoiceCapable == false) {
+        if (mSmsCapable == false) {
             if (DBG) {
                 log("useDataRegStateForDataOnlyDevice: VoiceRegState=" + mNewSS.getVoiceRegState()
                     + " DataRegState=" + mNewSS.getDataRegState());
             }
-            // TODO: Consider not lying and instead have callers know the difference. 
+            // TODO: Consider not lying and instead have callers know the difference.
             mNewSS.setVoiceRegState(mNewSS.getDataRegState());
+
+            /* Integrate ALPS00286197 with MR2 data only device state update */
+            mNewSS.setRegState(ServiceState.REGISTRATION_STATE_HOME_NETWORK);
         }
     }
 
@@ -566,6 +663,8 @@ public abstract class ServiceStateTracker extends Handler {
                 onUpdateIccAvailability();
                 break;
 
+            /* MR2 newly added event handling START */
+            case EVENT_GET_CELL_INFO_LIST_BY_RATE:
             case EVENT_GET_CELL_INFO_LIST: {
                 AsyncResult ar = (AsyncResult) msg.obj;
                 CellInfoResult result = (CellInfoResult) ar.userObj;
@@ -576,14 +675,20 @@ public abstract class ServiceStateTracker extends Handler {
                     } else {
                         result.list = (List<CellInfo>) ar.result;
 
-                        if (VDBG) {
+                        if (DBG) {
                             log("EVENT_GET_CELL_INFO_LIST: size=" + result.list.size()
                                     + " list=" + result.list);
                         }
                     }
                     mLastCellInfoListTime = SystemClock.elapsedRealtime();
                     mLastCellInfoList = result.list;
+                    if (msg.what == EVENT_GET_CELL_INFO_LIST_BY_RATE) {
+                        log("EVENT_GET_CELL_INFO_LIST_BY_RATE notify result");
+                        mPhoneBase.notifyCellInfo(result.list);
+                    } else {
                     result.lockObj.notify();
+                        log("EVENT_GET_CELL_INFO_LIST notify result");
+                    }
                 }
                 break;
             }
@@ -627,6 +732,7 @@ public abstract class ServiceStateTracker extends Handler {
     protected abstract void handlePollStateResult(int what, AsyncResult ar);
     protected abstract void updateSpnDisplay();
     protected abstract void setPowerStateToDesired();
+    protected abstract void setDeviceRatMode(int phoneId);
     protected abstract void onUpdateIccAvailability();
     protected abstract void log(String s);
     protected abstract void loge(String s);
@@ -636,6 +742,7 @@ public abstract class ServiceStateTracker extends Handler {
 
     public abstract void setImsRegistrationState(boolean registered);
     public abstract void pollState();
+    public void refreshSpnDisplay() {}
 
     /**
      * Registration point for transition into DataConnection attached.
@@ -748,6 +855,25 @@ public abstract class ServiceStateTracker extends Handler {
     }
 
     /**
+     * Registration point for signal strength changed.
+     * @param h handler to notify
+     * @param what what code of message when delivered
+     * @param obj placed in Message.obj
+     */
+    public void registerForSignalStrengthChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mSignalStrengthChangedRegistrants.add(r);
+    }
+
+    /**
+     * Unregister registration point for signal strength changed.
+     * @param h handler to notify
+     */
+    public void unregisterForSignalStrengthChanged(Handler h) {
+        mSignalStrengthChangedRegistrants.remove(h);
+    }
+
+    /**
      * Clean up existing voice and data connection then turn off radio power.
      *
      * Hang up the existing voice calls to decrease call drop rate.
@@ -785,8 +911,8 @@ public abstract class ServiceStateTracker extends Handler {
                     Message msg = Message.obtain(this);
                     msg.what = EVENT_SET_RADIO_POWER_OFF;
                     msg.arg1 = ++mPendingRadioPowerOffAfterDataOffTag;
-                    if (sendMessageDelayed(msg, 30000)) {
-                        if (DBG) log("Wait upto 30s for data to disconnect, then turn off radio.");
+                    if (sendMessageDelayed(msg, 5000)) {
+                        if (DBG) log("Wait upto 5s for data to disconnect, then turn off radio.");
                         mPendingRadioPowerOffAfterDataOff = true;
                     } else {
                         log("Cannot send delayed Msg, turn off radio right away.");
@@ -824,6 +950,11 @@ public abstract class ServiceStateTracker extends Handler {
     protected boolean onSignalStrengthResult(AsyncResult ar, boolean isGsm) {
         SignalStrength oldSignalStrength = mSignalStrength;
 
+        if ((DBG) && (mLastSignalStrength != null)) {
+            log("onSignalStrengthResult():  LastSignalStrength=" +
+                    mLastSignalStrength.toString());
+        }
+
         // This signal is used for both voice and data radio signal so parse
         // all fields
 
@@ -831,6 +962,7 @@ public abstract class ServiceStateTracker extends Handler {
             mSignalStrength = (SignalStrength) ar.result;
             mSignalStrength.validateInput();
             mSignalStrength.setGsm(isGsm);
+            if (DBG) log("onSignalStrengthResult():new mSignalStrength=" + mSignalStrength.toString());
         } else {
             log("onSignalStrengthResult() Exception from RIL : " + ar.exception);
             mSignalStrength = new SignalStrength(isGsm);
@@ -916,7 +1048,7 @@ public abstract class ServiceStateTracker extends Handler {
      */
     public List<CellInfo> getAllCellInfo() {
         CellInfoResult result = new CellInfoResult();
-        if (VDBG) log("SST.getAllCellInfo(): E");
+        if (DBG) log("SST.getAllCellInfo(): E");
         int ver = mCi.getRilVersion();
         if (ver >= 8) {
             if (isCallerOnDifferentThread()) {
@@ -956,6 +1088,61 @@ public abstract class ServiceStateTracker extends Handler {
         }
     }
 
+    //M: MTK START
+    protected List<CellInfo> getAllCellInfoByRate() {
+        CellInfoResult result = new CellInfoResult();
+        if (DBG) log("SST.getAllCellInfoByRate(): enter");
+
+        int ver = mCi.getRilVersion();
+
+        if (ver >= 8) {
+            if (isCallerOnDifferentThread()) {
+                if ((SystemClock.elapsedRealtime() - mLastCellInfoListTime)
+                        > LAST_CELL_INFO_LIST_MAX_AGE_MS) {
+                    Message msg = obtainMessage(EVENT_GET_CELL_INFO_LIST_BY_RATE, result);
+                    synchronized (result.lockObj) {
+                        mCi.getCellInfoList(msg);
+                        try {
+                            result.lockObj.wait();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                            result.list = null;
+                        }
+                    }
+                } else {
+                    if (DBG) log("SST.getAllCellInfo(): return last, back to back calls");
+                    result.list = mLastCellInfoList;
+                }
+            } else {
+                if (DBG) log("SST.getAllCellInfo(): return last, same thread can't block");
+                result.list = mLastCellInfoList;
+            }
+        } else {
+            if (DBG) log("SST.getAllCellInfo(): not implemented");
+            result.list = null;
+        }
+        if (DBG) {
+            if (result.list != null) {
+                log("SST.getAllCellInfo(): X size=" + result.list.size()
+                        + " list=" + result.list);
+            } else {
+                log("SST.getAllCellInfo(): X size=0 list=null");
+            }
+        }
+        return result.list;
+    }
+
+    public void setCellInfoRate(int rateInMillis) {
+        log("SST.setCellInfoRate()");
+        mCellInfoRate = rateInMillis;
+        updateCellInfoRate();
+    }
+
+    protected void updateCellInfoRate() {
+        log("SST.updateCellInfoRate()");
+    }
+    // M: MTK END
+
     /**
      * @return signal strength
      */
@@ -970,6 +1157,7 @@ public abstract class ServiceStateTracker extends Handler {
         pw.println(" mSS=" + mSS);
         pw.println(" mNewSS=" + mNewSS);
         pw.println(" mCellInfo=" + mCellInfo);
+        pw.println(" mSignalStrength=" + mSignalStrength);
         pw.println(" mRestrictedState=" + mRestrictedState);
         pw.println(" mPollingContext=" + mPollingContext);
         pw.println(" mDesiredPowerState=" + mDesiredPowerState);
@@ -1057,5 +1245,123 @@ public abstract class ServiceStateTracker extends Handler {
 
     protected int getPhoneId() {
         return mPhoneBase.getPhoneId();
+    }
+
+    ///M:Add for svlte.@{
+    /**
+     * Set the Service State Tracker for SVLTE.
+     *
+     * @param lteSST the LTE Service State Tracker
+     */
+    public void setSvlteServiceStateTracker(SvlteServiceStateTracker lteSST) {
+    }
+
+    protected int getPreferredNetworkModeSettings(int phoneId) {
+        int networkType = -1;
+        int subId[] = SubscriptionManager.getSubId(phoneId);
+        if (subId != null && SubscriptionManager.isValidSubscriptionId(subId[0])) {
+            networkType = PhoneFactory.calculatePreferredNetworkType(mPhoneBase.getContext(), subId[0]);
+        } else {
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                int capabilityPhoneId = SystemProperties.getInt(PhoneConstants.PROPERTY_CAPABILITY_SWITCH, 1);
+                log("capabilityPhoneId=" + capabilityPhoneId + ", phoneId=" + phoneId);
+                if (TelephonyManager.getDefault().getPhoneCount() == 1 || phoneId == (capabilityPhoneId - 1)) {
+                    // Determine if the Icc card exists
+                    boolean iccCardExist = false;
+                    if (mUiccApplcation != null) {
+                        iccCardExist = mUiccApplcation.getState() != AppState.APPSTATE_UNKNOWN;
+                    }
+
+                    // Modem default is LTE only, so need to set RAT to allow emergency call when card absent
+                    if (!iccCardExist) {
+                        networkType = PhoneFactory.calculatePreferredNetworkType(mPhoneBase.getContext());
+                        log("Card absent, set network type to " + networkType);
+                    } else {
+                        log("Invalid subId, return invalid networkType");
+                    }
+                } else {
+                    log("Invalid subId and not capability phone, return invalid networkType");
+                }
+            } else {
+                log("Invalid subId, return invalid networkType");
+            }
+        }
+
+        return networkType;
+    }
+
+    /**
+     * get the Service State for SVLTE.
+     *
+     *@return ServiceState the Service State for SVLTE.
+     */
+    public ServiceState getSvlteServiceState() {
+        return null;
+    }
+
+    /**
+     * Set the Signal Strength for the phone.
+     * @param ar The param include the Signal Strength.
+     * @param isGsm Mark for the Signal Strength is gsm or not.
+     */
+    protected void setSignalStrength(AsyncResult ar, boolean isGsm) {
+        SignalStrength oldSignalStrength = mSignalStrength;
+
+        if ((DBG) && (mLastSignalStrength != null)) {
+            log("Before combine Signal Strength, setSignalStrength(): isGsm = "
+                    + isGsm + " LastSignalStrength = "
+                    + mLastSignalStrength.toString());
+        }
+
+        // This signal is used for both voice and data radio signal so parse
+        // all fields
+
+        if ((ar.exception == null) && (ar.result != null)) {
+            mSignalStrength = (SignalStrength) ar.result;
+            mSignalStrength.validateInput();
+            mSignalStrength.setGsm(isGsm);
+            if (DBG) {
+                log("Before combine Signal Strength, setSignalStrength(): isGsm = "
+                        + isGsm + "new mSignalStrength = "
+                        + mSignalStrength.toString());
+            }
+        } else {
+            log("Before combine Signal Strength, setSignalStrength() Exception from RIL : "
+                    + ar.exception);
+            mSignalStrength = new SignalStrength(isGsm);
+        }
+    }
+    /// @}
+
+    /**
+     * Return true if plmn is Home Plmn.
+     * @param plmn
+     * @return true is plmn is home plmn
+     */
+    public boolean isHPlmn(String plmn) {
+        return false;
+    }
+
+    public int getCardType(int simId) {
+        int phoneNum = TelephonyManager.getDefault().getPhoneCount();
+        int[] cardType = new int[phoneNum];
+        cardType = UiccController.getInstance().getC2KWPCardType();
+        log("[getCardType]: SIM" + simId + " type: " + cardType[simId]);
+        return cardType[simId];
+    }
+
+    public static boolean containsCdmaApp(int cardType) {
+        if ((cardType & UiccController.CARD_TYPE_RUIM) > 0
+                || (cardType & UiccController.CARD_TYPE_CSIM) > 0) {
+            return true;
+        }
+        return false;
+    }
+
+    public static boolean containsUsimApp(int cardType) {
+        if ((cardType & UiccController.CARD_TYPE_USIM) > 0) {
+            return true;
+        }
+        return false;
     }
 }

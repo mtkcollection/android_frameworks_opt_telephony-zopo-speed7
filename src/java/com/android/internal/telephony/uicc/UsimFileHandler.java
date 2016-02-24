@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006, 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,8 +39,21 @@ public final class UsimFileHandler extends IccFileHandler implements IccConstant
 
     @Override
     protected String getEFPath(int efid) {
+        return getEFPath(efid, false);
+    }
+    protected String getEFPath(int efid, boolean is7FFF) {
+        // TODO(): DF_GSM can be 7F20 or 7F21 to handle backward compatibility.
+        // Implement this after discussion with OEMs.
+        String DF_APP = DF_GSM;
+
+        if ((mParentApp != null) && (mParentApp.getType() == IccCardApplicationStatus.AppType.APPTYPE_USIM)) {
+            DF_APP = DF_USIM;
+        }
         switch(efid) {
+        case EF_ICCID:
+            return null;
         case EF_SMS:
+        case EF_SMSP:   // [ALPS01206315] Support EF_SMSP
         case EF_EXT6:
         case EF_MWIS:
         case EF_MBI:
@@ -47,19 +65,27 @@ public final class UsimFileHandler extends IccFileHandler implements IccConstant
         case EF_SPDI:
         case EF_SST:
         case EF_CFIS:
+        case EF_FDN:
+        case EF_MSISDN:
+        case EF_EXT2:
+        case EF_SDN:
+        case EF_GID1:
+        case EF_LI:
+        case EF_ECC:
+
+            return MF_SIM + DF_ADF;
+
         case EF_MAILBOX_CPHS:
         case EF_VOICE_MAIL_INDICATOR_CPHS:
         case EF_CFF_CPHS:
         case EF_SPN_CPHS:
         case EF_SPN_SHORT_CPHS:
-        case EF_FDN:
-        case EF_MSISDN:
-        case EF_EXT2:
         case EF_INFO_CPHS:
         case EF_CSP_CPHS:
-        case EF_GID1:
-        case EF_LI:
-            return MF_SIM + DF_ADF;
+            return DF_GSM;
+
+        case EF_PSISMSC:
+            return /*MF_SIM +*/ DF_TELECOM;
 
         case EF_PBR:
             // we only support global phonebook.

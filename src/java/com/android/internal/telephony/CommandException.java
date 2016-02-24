@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,6 +32,7 @@ public class CommandException extends RuntimeException {
     private Error mError;
 
     public enum Error {
+        // AOSP start
         INVALID_RESPONSE,
         RADIO_NOT_AVAILABLE,
         GENERIC_FAILURE,
@@ -34,6 +40,7 @@ public class CommandException extends RuntimeException {
         SIM_PIN2,
         SIM_PUK2,
         REQUEST_NOT_SUPPORTED,
+        REQUEST_CANCELLED,
         OP_NOT_ALLOWED_DURING_VOICE_CALL,
         OP_NOT_ALLOWED_BEFORE_REG_NW,
         SMS_FAIL_RETRY,
@@ -41,6 +48,7 @@ public class CommandException extends RuntimeException {
         SUBSCRIPTION_NOT_AVAILABLE,
         MODE_NOT_SUPPORTED,
         FDN_CHECK_FAILURE,
+
         ILLEGAL_SIM_OR_ME,
         MISSING_RESOURCE,
         NO_SUCH_ELEMENT,
@@ -54,6 +62,31 @@ public class CommandException extends RuntimeException {
         SS_MODIFIED_TO_DIAL,
         SS_MODIFIED_TO_USSD,
         SS_MODIFIED_TO_SS,
+        // AOSP end
+
+        INVALID_PARAMETER,
+
+        DIAL_STRING_TOO_LONG,
+        TEXT_STRING_TOO_LONG,
+        SIM_MEM_FULL,
+        /* M: SS part */
+        CALL_BARRED,
+        UT_XCAP_403_FORBIDDEN,
+        UT_UNKNOWN_HOST,
+        /* M: SS part end */
+
+        BT_SAP_UNDEFINED,
+        BT_SAP_NOT_ACCESSIBLE,
+        BT_SAP_CARD_REMOVED,
+
+        ADDITIONAL_NUMBER_STRING_TOO_LONG,
+        ADDITIONAL_NUMBER_SAVE_FAILURE,
+        ADN_LIST_NOT_EXIST,
+        EMAIL_SIZE_LIMIT,
+        EMAIL_NAME_TOOLONG,
+        NOT_READY,
+        /// M: SS Ut part
+        SPECAIL_UT_COMMAND_NOT_SUPPORTED,
     }
 
     public CommandException(Error e) {
@@ -119,6 +152,30 @@ public class CommandException extends RuntimeException {
                 return new CommandException(Error.SS_MODIFIED_TO_USSD);
             case RILConstants.SS_MODIFIED_TO_SS:
                 return new CommandException(Error.SS_MODIFIED_TO_SS);
+            case RILConstants.INVALID_PARAMETER:
+                return new CommandException(Error.INVALID_PARAMETER);
+            case RILConstants.DIAL_STRING_TOO_LONG:
+                return new CommandException(Error.DIAL_STRING_TOO_LONG);
+            case RILConstants.TEXT_STRING_TOO_LONG:
+                return new CommandException(Error.TEXT_STRING_TOO_LONG);
+            case RILConstants.SIM_MEM_FULL:
+                return new CommandException(Error.SIM_MEM_FULL);
+            case RILConstants.ADDITIONAL_NUMBER_STRING_TOO_LONG:
+                return new CommandException(Error.ADDITIONAL_NUMBER_STRING_TOO_LONG);
+            case RILConstants.ADDITIONAL_NUMBER_SAVE_FAILURE:
+                return new CommandException(Error.ADDITIONAL_NUMBER_SAVE_FAILURE);
+            case RILConstants.ADN_LIST_NOT_EXIST:
+                return new CommandException(Error.ADN_LIST_NOT_EXIST);
+            case RILConstants.EMAIL_SIZE_LIMIT:
+                return new CommandException(Error.EMAIL_SIZE_LIMIT);
+            case RILConstants.EMAIL_NAME_TOOLONG:
+                return new CommandException(Error.EMAIL_NAME_TOOLONG);
+            case RILConstants.BT_SAP_UNDEFINED:
+                return new CommandException(Error.BT_SAP_UNDEFINED);
+            case RILConstants.BT_SAP_NOT_ACCESSIBLE:
+                return new CommandException(Error.BT_SAP_NOT_ACCESSIBLE);
+            case RILConstants.BT_SAP_CARD_REMOVED:
+                return new CommandException(Error.BT_SAP_CARD_REMOVED);
             default:
                 Rlog.e("GSM", "Unrecognized RIL errno " + ril_errno);
                 return new CommandException(Error.INVALID_RESPONSE);

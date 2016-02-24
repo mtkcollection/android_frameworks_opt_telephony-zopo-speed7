@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -122,9 +127,11 @@ class BerTlv {
 
         /* COMPREHENSION-TLVs */
         if (endIndex - curIndex < length) {
+            /* Go on decoding comprehension TLV to check mininum set elements.(TS102.223, 6.10.3)
             throw new ResultException(ResultCode.CMD_DATA_NOT_UNDERSTOOD,
                     "Command had extra data endIndex=" + endIndex + " curIndex=" + curIndex +
                     " length=" + length);
+             */
         }
 
         List<ComprehensionTlv> ctlvs = ComprehensionTlv.decodeMany(data,

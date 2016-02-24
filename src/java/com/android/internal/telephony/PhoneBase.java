@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,6 +51,7 @@ import android.telephony.SignalStrength;
 import android.telephony.SubscriptionManager;
 import android.telephony.VoLteServiceState;
 import android.text.TextUtils;
+import android.os.Bundle;
 
 import com.android.ims.ImsManager;
 import com.android.internal.R;
@@ -66,10 +72,31 @@ import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashSet;
+/// M: SS OP01 Ut @{
+import java.util.Arrays;
+import java.util.Calendar;
+/// @}
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+/// M: SS OP01 Ut
+import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicReference;
+
+import com.mediatek.internal.telephony.FemtoCellInfo;
+import com.mediatek.internal.telephony.NetworkInfoWithAcT;
+import com.mediatek.internal.telephony.RadioManager;
+
+//VoLTE
+import com.mediatek.internal.telephony.QosStatus;
+import com.mediatek.internal.telephony.TftStatus;
+import com.mediatek.internal.telephony.PcscfInfo;
+import com.mediatek.internal.telephony.DedicateBearerProperties;
+import com.mediatek.internal.telephony.DefaultBearerConfig;
+import com.android.internal.telephony.dataconnection.DcFailCause;
+import com.android.internal.telephony.dataconnection.DcTracker;
+
+
 
 /**
  * (<em>Not for SDK use</em>)
@@ -99,8 +126,17 @@ public abstract class PhoneBase extends Handler implements Phone {
                     return;
                 }
             }
-
+            /// M: Simulate MSIM switch @{
+            Rlog.w(LOG_TAG, intent.getAction() + ", getSubId=" + getSubId() +
+                    ", getPhoneId=" + getPhoneId());
+            /// @}
             if (intent.getAction().equals(ImsManager.ACTION_IMS_SERVICE_UP)) {
+                /// M: Simulate MSIM switch @{
+                if (SystemProperties.getInt("persist.ims.simulate", 0) == 1
+                        && SystemProperties.getInt("persist.ims.phoneid", 0) != getPhoneId()) {
+                    return;
+                }
+                /// @}
                 mImsServiceReady = true;
                 updateImsPhone();
             } else if (intent.getAction().equals(ImsManager.ACTION_IMS_SERVICE_DOWN)) {
@@ -114,6 +150,13 @@ public abstract class PhoneBase extends Handler implements Phone {
     public static final String NETWORK_SELECTION_KEY = "network_selection_key";
     // Key used to read and write the saved network selection operator name
     public static final String NETWORK_SELECTION_NAME_KEY = "network_selection_name_key";
+
+    public static final String NETWORK_SELECTION_KEY_2 = "network_selection_key_2";
+    public static final String NETWORK_SELECTION_NAME_KEY_2 = "network_selection_name_key_2";
+    public static final String NETWORK_SELECTION_KEY_3 = "network_selection_key_3";
+    public static final String NETWORK_SELECTION_NAME_KEY_3 = "network_selection_name_key_3";
+    public static final String NETWORK_SELECTION_KEY_4 = "network_selection_key_4";
+    public static final String NETWORK_SELECTION_NAME_KEY_4 = "network_selection_name_key_4";
 
 
     // Key used to read/write "disable data connection on boot" pref (used for testing)
@@ -163,7 +206,49 @@ public abstract class PhoneBase extends Handler implements Phone {
     protected static final int EVENT_UNSOL_OEM_HOOK_RAW             = 34;
     protected static final int EVENT_GET_RADIO_CAPABILITY           = 35;
     protected static final int EVENT_SS                             = 36;
-    protected static final int EVENT_LAST                           = EVENT_SS;
+
+    /// M: CC060: Notify SIP call RING @{
+    protected static final int EVENT_SIP_CALL_RING                  = 37;
+    /// @}
+    protected static final int EVENT_CFU_IND                        = 38;
+    protected static final int EVENT_CFU_QUERY_TIMEOUT              = 39; /* For ALPS01023811 */
+    /// M: CC010: Add RIL interface @{
+    protected static final int EVENT_CRSS_IND                       = 40;
+    protected static final int EVENT_VOICE_CALL_INCOMING_INDICATION = 41;
+    protected static final int EVENT_CIPHER_INDICATION              = 42;
+    /// @}
+    protected static final int EVENT_GET_PHONE_RAT_FAMILY              = 43;
+    protected static final int EVENT_PHONE_RAT_FAMILY_CHANGED_NOTIFY   = 44;
+    // special cmd from battery
+    protected static final int EVENT_CHARGING_STOP                  = 45;
+    protected static final int EVENT_ABNORMAL_EVENT                 = 46;
+    protected static final int EVENT_SET_BAND_MODE_DONE             = 47;
+
+    /// M: c2k modify, event constants. @{
+    protected static final int EVENT_QUERY_UIM_INSERTED_STATUS_DONE = 100;
+    protected static final int EVENT_GET_UIM_INSERT_STATUS_RETRY    = 101;
+    protected static final int EVENT_SET_MEID_DONE                  = 102;
+    protected static final int EVENT_CDMA_MCC_MNC_CHANGED           = 103;
+    protected static final int EVENT_RUIM_READY                     = 205;
+    /// @}
+
+    /// M: SS @{
+    protected static final int EVENT_IMS_UT_DONE                    = 2000;
+    protected static final int EVENT_IMS_UT_CSFB                    = 2001;
+    protected static final int EVENT_QUERY_CFU                      = 2002;
+    /// @}
+
+    /** M: for suspend data during plmn list */
+    protected static final int EVENT_GET_AVAILABLE_NETWORK_DONE = 500520;
+    protected static final int EVENT_DC_SWITCH_STATE_CHANGE = 500521;
+    protected static final int EVENT_GET_AVAILABLE_NETWORK = 500522;
+
+    /// M: SS OP01 Ut @{
+    protected static final int EVENT_GET_CALL_FORWARD_TIME_SLOT_DONE = 201;
+    protected static final int EVENT_SET_CALL_FORWARD_TIME_SLOT_DONE = 202;
+    /// @}
+
+    protected static final int EVENT_LAST = EVENT_PHONE_RAT_FAMILY_CHANGED_NOTIFY;
 
     // For shared prefs.
     private static final String GSM_ROAMING_LIST_OVERRIDE_PREFIX = "gsm_roaming_list_";
@@ -173,6 +258,10 @@ public abstract class PhoneBase extends Handler implements Phone {
 
     // Key used to read/write current CLIR setting
     public static final String CLIR_KEY = "clir_key";
+    /* M: SS part */
+    /// M: Add key for SIM2 CLIR setting.
+    public static final String CLIR_KEY_2 = "clir_key_2";
+    /* M: SS part end */
 
     // Key used for storing voice mail count
     public static final String VM_COUNT = "vm_count_key";
@@ -188,7 +277,7 @@ public abstract class PhoneBase extends Handler implements Phone {
      * if we are looking for automatic selection. operatorAlphaLong is the
      * corresponding operator name.
      */
-    protected static class NetworkSelectMessage {
+    public static class NetworkSelectMessage {
         public Message message;
         public String operatorNumeric;
         public String operatorAlphaLong;
@@ -220,9 +309,21 @@ public abstract class PhoneBase extends Handler implements Phone {
 
     private final Object mImsLock = new Object();
     private boolean mImsServiceReady = false;
-    protected static ImsPhone mImsPhone = null;
+    protected ImsPhone mImsPhone = null;
 
     protected int mRadioAccessFamily = RadioAccessFamily.RAF_UNKNOWN;
+
+    /// M: CC060: [ALPS00093395] Notify SIP call RING @{
+    int mSipCallRingContinueToken = 0;
+    /// @}
+
+    /* M: VoLTE SS start */
+    private int mCSFallbackMode = 0;
+    /* M: VoLTE SS end */
+
+    /// M: SS OP01 Ut @{
+    private static final String CFU_TIME_SLOT = "persist.radio.cfu.timeslot.";
+    /// @}
 
     @Override
     public String getPhoneName() {
@@ -313,6 +414,35 @@ public abstract class PhoneBase extends Handler implements Phone {
 
     protected final RegistrantList mSimRecordsLoadedRegistrants
             = new RegistrantList();
+
+    /// M: CC010: Add RIL interface @{
+    protected final RegistrantList mVoiceCallIncomingIndicationRegistrants
+            = new RegistrantList();
+
+    protected final RegistrantList mCipherIndicationRegistrants
+            = new RegistrantList();
+    /// @}
+
+    /// M: CC077: 2/3G CAPABILITY_HIGH_DEF_AUDIO @{
+    protected final RegistrantList mSpeechCodecInfoRegistrants
+            = new RegistrantList();
+    /// @}
+
+    protected final RegistrantList mCdmaCallAcceptedRegistrants
+            = new RegistrantList();
+
+    /// M: IMS feature. @{
+    // Used to notify IMS conference call indication. @{
+    protected final RegistrantList mImsConferenceCallRegistrants
+            = new RegistrantList();
+    // Used to notify call mode or pau changed notiication
+    protected final RegistrantList mCallInfoChangedRegistrants
+            = new RegistrantList();
+    /// @}
+
+    /// M:Add for SVLTE. @{
+    protected final RegistrantList mSvlteServiceStateRegistrants = new RegistrantList();
+    /// @}
 
     protected Looper mLooper; /* to insure registrants are in correct thread*/
 
@@ -424,14 +554,9 @@ public abstract class PhoneBase extends Handler implements Phone {
         mSmsUsageMonitor = new SmsUsageMonitor(context);
         mUiccController = UiccController.getInstance();
         mUiccController.registerForIccChanged(this, EVENT_ICC_CHANGED, null);
+        mUiccController.registerForApplicationChanged(this, EVENT_ICC_CHANGED, null);
 
-        // Monitor IMS service - but first poll to see if already up (could miss
-        // intent)
-        ImsManager imsManager = ImsManager.getInstance(mContext, getPhoneId());
-        if (imsManager != null && imsManager.isServiceAvailable()) {
-            mImsServiceReady = true;
-            updateImsPhone();
-        }
+        // Monitor IMS service
         IntentFilter filter = new IntentFilter();
         filter.addAction(ImsManager.ACTION_IMS_SERVICE_UP);
         filter.addAction(ImsManager.ACTION_IMS_SERVICE_DOWN);
@@ -460,12 +585,11 @@ public abstract class PhoneBase extends Handler implements Phone {
                 mTelephonyTester.dispose();
             }
 
-            // No deed to dispose static object
-            //ImsPhone imsPhone = mImsPhone;
-            //if (imsPhone != null) {
-            //    imsPhone.unregisterForSilentRedial(this);
-            //    imsPhone.dispose();
-            //}
+            ImsPhone imsPhone = mImsPhone;
+            if (imsPhone != null) {
+                imsPhone.unregisterForSilentRedial(this);
+                imsPhone.dispose();
+            }
         }
     }
 
@@ -538,6 +662,26 @@ public abstract class PhoneBase extends Handler implements Phone {
                 }
                 break;
 
+            case EVENT_CHARGING_STOP:
+                String s_fun[] = new String[2];
+                String s_rat[] = new String[2];
+                String s[] = new String[2];
+
+                Rlog.d(LOG_TAG, "send special AT cmd to MD");
+
+                s_fun[0] = "AT+EFUN=1";
+                s_fun[1] = "";
+                this.invokeOemRilRequestStrings(s_fun, null);
+
+                //s_rat[0] = "AT+ERAT=3";
+                //s_rat[1] = "";
+                //this.invokeOemRilRequestStrings(s_rat, null);
+
+                s[0] = "AT+ERFTX=1,0,0,"+SystemProperties.get("persist.radio.charging_stop","40");
+                s[1] = "";
+                this.invokeOemRilRequestStrings(s, null);
+                break;
+
             case EVENT_ICC_CHANGED:
                 onUpdateIccAvailability();
                 break;
@@ -571,7 +715,7 @@ public abstract class PhoneBase extends Handler implements Phone {
                     byte[] data = (byte[])ar.result;
                     Rlog.d(LOG_TAG, "EVENT_UNSOL_OEM_HOOK_RAW data="
                             + IccUtils.bytesToHexString(data));
-                    mNotifier.notifyOemHookRawEventForSubscriber(getSubId(), data);
+                    //mNotifier.notifyOemHookRawEventForSubscriber(getSubId(), data);
                 } else {
                     Rlog.e(LOG_TAG, "OEM hook raw exception: " + ar.exception);
                 }
@@ -587,8 +731,21 @@ public abstract class PhoneBase extends Handler implements Phone {
                     mRadioAccessFamily = rc.getRadioAccessFamily();
                 }
                 Rlog.d(LOG_TAG, "EVENT_GET_RADIO_CAPABILITY :"
-                        + "phone RAF : " + mRadioAccessFamily);
+                        + "phone " + mPhoneId + ", RAF : " + mRadioAccessFamily);
                 break;
+
+            /// M: CC060: [ALPS00093395] Notify SIP call RING @{
+            case EVENT_SIP_CALL_RING:
+                int token = msg.arg1;
+                Rlog.d(LOG_TAG, "Event EVENT_SIP_CALL_RING Received state=" + getState() + " token=" + token);
+                if (getState() == PhoneConstants.State.RINGING && token == mSipCallRingContinueToken) {
+                    notifyIncomingRing();
+                    mSipCallRingContinueToken++;
+                    sendMessageDelayed(
+                            obtainMessage(EVENT_SIP_CALL_RING, mSipCallRingContinueToken, 0), mCallRingDelay);
+                }
+                break;
+            /// @}
 
             default:
                 throw new RuntimeException("unexpected event not handled");
@@ -603,6 +760,9 @@ public abstract class PhoneBase extends Handler implements Phone {
         Call.SrvccState srvccState = Call.SrvccState.NONE;
         if (ret != null && ret.length != 0) {
             int state = ret[0];
+            /// M: for debug. @{
+            Rlog.d(LOG_TAG, "srvccState: " + state);
+            /// @}
             switch(state) {
                 case VoLteServiceState.HANDOVER_STARTED:
                     srvccState = Call.SrvccState.STARTED;
@@ -708,6 +868,7 @@ public abstract class PhoneBase extends Handler implements Phone {
     /**
      * Subclasses of Phone probably want to replace this with a
      * version scoped to their packages
+     * @param cn the handover connection
      */
     public void notifyHandoverStateChanged(Connection cn) {
        AsyncResult ar = new AsyncResult(null, cn, null);
@@ -1065,6 +1226,14 @@ public abstract class PhoneBase extends Handler implements Phone {
         mServiceStateRegistrants.notifyRegistrants(ar);
 
         mNotifier.notifyServiceState(this);
+
+        if((ss.getState() != ServiceState.STATE_POWER_OFF) && (SystemProperties.get("ril.charging_stop_enable","0").equals("1"))) {
+
+            // send special AT cmd to MD
+            sendMessageDelayed(
+                    obtainMessage(EVENT_CHARGING_STOP, 0, 0), 60000);
+        }
+
     }
 
     // Inherited documentation suffices.
@@ -1159,7 +1328,10 @@ public abstract class PhoneBase extends Handler implements Phone {
     @Override
     public void updatePhoneObject(int voiceRadioTech) {
         // Only the PhoneProxy can update the phone object.
-        PhoneFactory.getDefaultPhone().updatePhoneObject(voiceRadioTech);
+        /// M: c2k modify, for multiple SIM, call the corresponding PhoneProxy to update object. @{
+        // PhoneFactory.getDefaultPhone().updatePhoneObject(voiceRadioTech);
+        PhoneFactory.getPhone(mPhoneId).updatePhoneObject(voiceRadioTech);
+        /// @}
     }
 
     /**
@@ -1249,6 +1421,8 @@ public abstract class PhoneBase extends Handler implements Phone {
     @Override
     public void setCellInfoListRate(int rateInMillis) {
         mCi.setCellInfoListRate(rateInMillis, null);
+        // M: MTK Add
+        getServiceStateTracker().setCellInfoRate(rateInMillis);
     }
 
     @Override
@@ -2207,5 +2381,559 @@ public abstract class PhoneBase extends Handler implements Phone {
         }
         pw.flush();
         pw.println("++++++++++++++++++++++++++++++++");
+    }
+
+    /// M: CC060: [ALPS00093395] Notify SIP call RING @{
+    protected void notifySipCallRing() {
+       Rlog.d(LOG_TAG, "notify Sip Call Ring");
+       mSipCallRingContinueToken = 0;
+       sendMessage(obtainMessage(EVENT_SIP_CALL_RING, mSipCallRingContinueToken, 0));
+    }
+    /// @}
+
+    /// M: CC010: Add RIL interface @{
+    public void registerForCrssSuppServiceNotification(Handler h, int what, Object obj) {
+    }
+
+    public void unregisterForCrssSuppServiceNotification(Handler h) {
+    }
+
+    public void registerForVoiceCallIncomingIndication(
+            Handler h, int what, Object obj) {
+        Rlog.e(LOG_TAG, "registerForVoiceCallIncomingIndication");
+        mVoiceCallIncomingIndicationRegistrants.addUnique(h, what, obj);
+    }
+
+    public void unregisterForVoiceCallIncomingIndication(Handler h) {
+        mVoiceCallIncomingIndicationRegistrants.remove(h);
+    }
+
+    public void registerForCipherIndication(Handler h, int what, Object obj) {
+        mCipherIndicationRegistrants.addUnique(h, what, obj);
+    }
+
+    public void unregisterForCipherIndication(Handler h) {
+        mCipherIndicationRegistrants.remove(h);
+    }
+    /// @}
+
+    /// M: CC077: 2/3G CAPABILITY_HIGH_DEF_AUDIO @{
+    // Inherited documentation suffices.
+    @Override
+    public void registerForSpeechCodecInfo(Handler h, int what, Object obj) {
+        checkCorrectThread(h);
+        mSpeechCodecInfoRegistrants.addUnique(h, what, obj);
+    }
+
+    // Inherited documentation suffices.
+    @Override
+    public void unregisterForSpeechCodecInfo(Handler h) {
+        mSpeechCodecInfoRegistrants.remove(h);
+    }
+    /// @}
+
+    /// M: CC010: Add RIL interface @{
+    public void hangupAll() throws CallStateException {}
+    /// @}
+
+    // Added by M begin
+    // ALPS00302702 RAT balancing
+    public int getEfRatBalancing() {
+        return IccRecords.EF_RAT_UNDEFINED;
+    }
+
+    // MVNO-API START
+    public String getMvnoMatchType() {
+        // override by child-class
+        return null;
+    }
+    public String getMvnoPattern(String type) {
+        // override by child-class
+        return null;
+    }
+    // MVNO-API END
+
+    /**
+    *send BT SAP profile
+    */
+    public void sendBtSimProfile(int nAction, int nType, String strData, Message response) {
+        mCi.sendBTSIMProfile(nAction, nType, strData, response);
+    }
+
+    @Override
+    public void doGeneralSimAuthentication(int sessionId, int mode, int tag,
+            String param1, String param2, Message result) {
+    }
+
+    @Override
+    public void queryPhbStorageInfo(int type, Message response) {
+    }
+
+    // M: network part START
+    public void registerForNeighboringInfo(Handler h, int what, Object obj) {
+        mCi.registerForNeighboringInfo(h, what, obj);
+    }
+
+    public void unregisterForNeighboringInfo(Handler h) {
+        mCi.unregisterForNeighboringInfo(h);
+    }
+
+    public void registerForNetworkInfo(Handler h, int what, Object obj) {
+        mCi.registerForNetworkInfo(h, what, obj);
+    }
+
+    public void unregisterForNetworkInfo(Handler h) {
+        mCi.unregisterForNetworkInfo(h);
+    }
+
+    /**
+     * Refresh Spn Display due to configuration change
+     */
+    public void refreshSpnDisplay() {
+    }
+
+
+    public int getNetworkHideState() {
+        return 0;
+    }
+
+    public String getLocatedPlmn() {
+        return null;
+    }
+
+    public void getPolCapability(Message onComplete) {
+    }
+
+    public void getPol(Message onComplete) {
+    }
+
+    public void setPolEntry(NetworkInfoWithAcT networkWithAct, Message onComplete) {
+    }
+
+    public void
+    cancelAvailableNetworks(Message response) {
+    }
+
+    public void setNetworkSelectionModeSemiAutomatic(OperatorInfo network, Message response){
+    }
+
+    // Femtocell (CSG) feature START
+    public void getFemtoCellList(String operatorNumeric, int rat, Message response){
+        // override by child-class
+    }
+
+    public void abortFemtoCellList(Message response){
+        // override by child-class
+    }
+
+    public void selectFemtoCell(FemtoCellInfo femtocell, Message response){
+        // override by child-class
+    }
+     // Femtocell (CSG) feature END
+    //M: network part END
+
+// VOLTE
+    public int enableDedicateBearer(String apnType, boolean signalingFlag, QosStatus qosStatus, TftStatus tftStatus) {
+        return ((DcTracker)mDcTracker).enableDedicateBearer(apnType, signalingFlag, qosStatus, tftStatus);
+    }
+
+    public int disableDedicateBearer(String reason, int cid) {
+        return ((DcTracker)mDcTracker).disableDedicateBearer(reason, cid);
+    }
+
+    public int modifyDedicateBearer(int cid, QosStatus qosStatus, TftStatus tftStatus) {
+        return ((DcTracker)mDcTracker).modifyDedicateBearer(cid, qosStatus, tftStatus);
+    }
+
+    public int abortEnableDedicateBearer(String reason, int ddcId) {
+        return ((DcTracker)mDcTracker).abortEnableDedicateBearer(reason, ddcId);
+    }
+
+    public int pcscfDiscovery(String apnType, int cid, Message onComplete) {
+        //since PCO, get it from DcTracker
+        return ((DcTracker)mDcTracker).pcscfDiscovery(apnType, cid, onComplete);
+    }
+
+    public PcscfInfo getPcoPcscf(String apnType) {
+        return ((DcTracker)mDcTracker).getPcscf(apnType);
+    }
+
+    public DedicateBearerProperties getDefaultBearerProperties(String apnType) {
+        return ((DcTracker)mDcTracker).getDefaultBearerProperties(apnType);
+    }
+
+    public DedicateBearerProperties [] getConcatenatedBearersPropertiesOfDefaultBearer(String apnType) {
+        return ((DcTracker)mDcTracker).getConcatenatedBearersPropertiesOfDefaultBearer(apnType);
+    }
+
+    public int setDefaultBearerConfig(String apnType, DefaultBearerConfig defaultBearerConfig) {
+        return ((DcTracker)mDcTracker).setDefaultBearerConfig(apnType, defaultBearerConfig);
+    }
+
+    public int [] getDeactivateCidArray(String apnType) {
+        return ((DcTracker)mDcTracker).getDeactivateCidArray(apnType);
+    }
+
+    public boolean isEmergencyCid(int cid) {
+        return ((DcTracker) mDcTracker).isEmergencyCid(cid);
+    }
+
+    public DcFailCause getLastDataConnectionFailCause(String apnType) {
+        return ((DcTracker)mDcTracker).getLastDataConnectionFailCause(apnType);
+    }
+
+    public boolean isDedicateBearer(int cid) {
+        return ((DcTracker)mDcTracker).isDedicateBearer(cid);
+    }
+
+    public void clearDataBearer() {}
+
+    /* M: SS part */
+    public void getFacilityLock(String facility, String password, Message onComplete) {
+    }
+
+    public void setFacilityLock(String facility, boolean enable,
+        String password, Message onComplete) {
+    }
+
+    public void changeBarringPassword(String facility, String oldPwd,
+        String newPwd, Message onComplete) {
+    }
+
+    public void changeBarringPassword(String facility, String oldPwd,
+        String newPwd, String newCfm, Message onComplete) {
+    }
+    /* M: SS part end */
+
+    /// M: SS OP01 Ut @{
+    public void getCallForwardInTimeSlot(int commandInterfaceCFReason,
+            Message onComplete) {
+    }
+
+    public void setCallForwardInTimeSlot(int commandInterfaceCFAction,
+            int commandInterfaceCFReason, String dialingNumber,
+            int timerSeconds, long[] timeSlot, Message onComplete) {
+    }
+
+    public void saveTimeSlot(long[] timeSlot) {
+        String timeSlotKey = CFU_TIME_SLOT + mPhoneId;
+        String timeSlotString = "";
+        if (timeSlot != null && timeSlot.length == 2) {
+            timeSlotString = Long.toString(timeSlot[0]) + "," + Long.toString(timeSlot[1]);
+        }
+        SystemProperties.set(timeSlotKey, timeSlotString);
+        Rlog.d(LOG_TAG, "timeSlotString = " + timeSlotString);
+    }
+
+    public long[] getTimeSlot() {
+        String timeSlotKey = CFU_TIME_SLOT + mPhoneId;
+        String timeSlotString = SystemProperties.get(timeSlotKey, "");
+        long[] timeSlot = null;
+        if (timeSlotString != null && !timeSlotString.equals("")) {
+            String[] timeArray = timeSlotString.split(",");
+            if (timeArray.length == 2) {
+                timeSlot = new long[2];
+                for (int i = 0; i < 2; i++) {
+                    timeSlot[i] = Long.parseLong(timeArray[i]);
+                    Calendar calenar = Calendar.getInstance(TimeZone.getDefault());
+                    calenar.setTimeInMillis(timeSlot[i]);
+                    int hour = calenar.get(Calendar.HOUR_OF_DAY);
+                    int min = calenar.get(Calendar.MINUTE);
+                    Calendar calenar2 = Calendar.getInstance(TimeZone.getDefault());
+                    calenar2.set(Calendar.HOUR_OF_DAY, hour);
+                    calenar2.set(Calendar.MINUTE, min);
+                    timeSlot[i] = calenar2.getTimeInMillis();
+                }
+            }
+        }
+        Rlog.d(LOG_TAG, "timeSlot = " + Arrays.toString(timeSlot));
+        return timeSlot;
+    }
+    /// @}
+
+    /// M: IMS feature. @{
+    /* Used to notify IMS conference call indication. */
+    public void registerForImsConferenceCallNotification(Handler h, int what, Object obj) {
+        mImsConferenceCallRegistrants.addUnique(h, what, obj);
+    }
+
+    public void unregisterForImsConferenceCallNotification(Handler h) {
+        mImsConferenceCallRegistrants.remove(h);
+    }
+
+    public void registerForCallInfoChangedNotification(Handler h, int what, Object obj) {
+        mCallInfoChangedRegistrants.addUnique(h, what, obj);
+    }
+
+    public void unregisterForCallInfoChangedNotification(Handler h) {
+        mCallInfoChangedRegistrants.remove(h);
+    }
+
+    /**
+    * Notify call info changed for PAU.
+    *
+    * @param callInfo Bundle
+    */
+    public void notifyCallInfoChanged(Bundle callInfo) {
+        AsyncResult ar = new AsyncResult(null, callInfo, null);
+        mCallInfoChangedRegistrants.notifyRegistrants(ar);
+    }
+
+    /**
+    * Add a new member to VoLTE conference call according to the parameter - address.
+    *
+    * @param confCallId IMS(VoLTE) conference call id
+    * @param address The address(phone number or SIP URI)
+    * @param callIdToAdd The call id of call which is preparing to merge to current conference call.
+    *
+    */
+    public void addConferenceMember(int confCallId, String address, int callIdToAdd) throws CallStateException {
+       //do nothing
+    }
+
+    /**
+     * Initiate a new conference host connection.
+     *
+     * @param numbers The dial numbers.
+     * @param videoState The desired video state for the connection.
+     * @exception CallStateException if a new outgoing call is not currently possible because
+     * no more call slots exist or a call exists that is dialing, alerting, ringing, or waiting.
+     * Other errors are handled asynchronously.
+     * @return Connection the MO connection.
+     * @hide
+     */
+    public Connection dial(List<String> numbers, int videoState) throws CallStateException {
+        return null;
+    }
+    /// @}
+
+    /* M: VoLTE SS part start */
+    /**
+     * Get the UT CS fallback status.
+     *
+     * @return The UT CS fallback status:
+     *         {@link PhoneConstants.UT_CSFB_PS_PREFERRED}
+     *         {@link PhoneConstants.UT_CSFB_ONCE}
+     *         {@link PhoneConstants.UT_CSFB_UNTIL_NEXT_BOOT}.
+     */
+    public int getCsFallbackStatus() {
+        Rlog.d(LOG_TAG, "getCsFallbackStatus is " + mCSFallbackMode);
+        return mCSFallbackMode;
+    }
+
+    /**
+     * Set the UT CS fallback status.
+     *
+     * @param newStatus The UT CS fallback status:
+     *        {@link PhoneConstants.UT_CSFB_PS_PREFERRED} for PS domain UT/XCAP SS request.
+     *        {@link PhoneConstants.UT_CSFB_ONCE} to fallback to CS domain SS request only once.
+     *        {@link PhoneConstants.UT_CSFB_UNTIL_NEXT_BOOT} to fallback to CS domain SS request
+     *        until next reboot.
+     */
+    public void setCsFallbackStatus(int newStatus) {
+        Rlog.d(LOG_TAG, "setCsFallbackStatus to " + newStatus);
+        mCSFallbackMode = newStatus;
+    }
+    /* M: VoLTE SS part end */
+
+    /// M: c2k modify, phone base interface. @{
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+    }
+
+    /// M: [C2K][SVLTE] Support OPLMN version. @{
+    /**
+     * Get the version of OPLMN.
+     * @param response the responding message
+     */
+    public void getOplmnVersion(Message response) {
+        mCi.getOplmnVersion(response);
+    }
+    /// @}
+
+    /**
+     * M: Register for VIA CDMA modem suspend register network URC, add dummy
+     * interface to separate from default CDMA implement.
+     *
+     * @param h the handler which listen the changed.
+     * @param what the message's what value.
+     * @param obj the message's obj value.
+     */
+    public void registerForMccMncChange(Handler h, int what, Object obj) {
+    }
+
+    /**
+     * M: Unregister for VIA CDMA modem suspend register network URC, add dummy
+     * interface to separate from default CDMA implement.
+     *
+     * @param h the handler which listen the changed.
+     */
+    public void unregisterForMccMncChange(Handler h) {
+    }
+
+    /**
+     * M: Resume VIA CDMA modem register network, add dummy interface to
+     * separate from legacy CDMA implement.
+     *
+     * @param result the responding message.
+     */
+    public void resumeCdmaRegister(Message result) {
+    }
+
+    /// M: [C2K][SVLTE] Support modem remote SIM access. @{
+    @Override
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {
+        mCi.configModemStatus(modemStatus, remoteSimProtocol, result);
+    }
+    /// @}
+
+    /// M: [C2K] for eng mode start
+    @Override
+    public void registerForEngModeNetworkInfo(Handler h, int what, Object obj) {
+        mCi.registerForEngModeNetworkInfo(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForEngModeNetworkInfo(Handler h) {
+        mCi.unregisterForEngModeNetworkInfo(h);
+    }
+    /// M: [C2K] for eng mode end
+
+    /// For SVLTE to update Phone Id
+    @Override
+    public void setPhoneId(int phoneId) {
+        mPhoneId = phoneId;
+        // Should also update RIL instance id
+        mCi.setInstanceId(phoneId);
+    }
+
+    /**
+     * Register for CDMA call really be accepted.
+     *
+     * @param h the handler which listen the changed.
+     * @param what the message's what value.
+     * @param obj the message's obj value.
+     */
+    public void registerForCdmaCallAccepted(Handler h, int what, Object obj) {
+        checkCorrectThread(h);
+        mCdmaCallAcceptedRegistrants.addUnique(h, what, obj);
+    }
+
+    /**
+     * Unregister for CDMA call really be accepted.
+     *
+     * @param h the handler which listen the changed.
+     */
+    public void unregisterForCdmaCallAccepted(Handler h) {
+        mCdmaCallAcceptedRegistrants.remove(h);
+    }
+
+    /**
+     * Notify CDMA call really be accepted.
+     */
+    public void notifyCdmaCallAccepted() {
+        AsyncResult ar = new AsyncResult(null, this, null);
+        mCdmaCallAcceptedRegistrants.notifyRegistrants(ar);
+    }
+
+    ///M: For svlte support. @{
+    /**
+     * Notify the service state change for the phone state listener.
+     * @param ss The ServiceState of phone.
+     */
+    protected void notifyServiceStateChangedPForSvlte(ServiceState ss) {
+        mNotifier.notifySvlteServiceStateChanged(this, ss);
+
+        if ((ss.getState() != ServiceState.STATE_POWER_OFF)
+                && (SystemProperties.get("ril.charging_stop_enable", "0")
+                        .equals("1"))) {
+
+            // send special AT cmd to MD
+            sendMessageDelayed(obtainMessage(EVENT_CHARGING_STOP, 0, 0), 60000);
+        }
+    }
+    /**
+     * Notify the service state change for service state registrants.
+     * @param ss The ServiceState of phone.
+     */
+    public void notifyServiceStateChangedPForRegistrants(ServiceState ss) {
+        AsyncResult ar = new AsyncResult(null, ss, null);
+        mServiceStateRegistrants.notifyRegistrants(ar);
+    }
+    // Inherited documentation suffices.
+    @Override
+    public void registerForSvlteServiceStateChanged(
+            Handler h, int what, Object obj) {
+        checkCorrectThread(h);
+
+        mSvlteServiceStateRegistrants.add(h, what, obj);
+    }
+
+    // Inherited documentation suffices.
+    @Override
+    public void unregisterForSvlteServiceStateChanged(Handler h) {
+        mSvlteServiceStateRegistrants.remove(h);
+    }
+
+    /**
+     * Notify the svlte service state change for service state registrants.
+     * @param ss The ServiceState of phone.
+     */
+    public void notifySvlteServiceStateChangedPForRegistrants(ServiceState ss) {
+        AsyncResult ar = new AsyncResult(null, ss, null);
+        mSvlteServiceStateRegistrants.notifyRegistrants(ar);
+    }
+
+    @Override
+    public ServiceState getSvlteServiceState() {
+        return null;
+    }
+    /// @}
+
+    @Override
+    public void setRadioAccessFamily(int radioAccessFamily) {
+        Rlog.w(LOG_TAG, "setRadioAccessFamily: " + radioAccessFamily);
+        mRadioAccessFamily = radioAccessFamily;
+    }
+
+    /// M: ALPS01953873. @{
+    /**
+     * Query if currently this phone supports the specific feature.
+     * @param feature defineded in Phone.java
+     * @return true if supporting.
+     * @hide
+     */
+    @Override
+    public boolean isFeatureSupported(FeatureType feature) {
+        if (feature == FeatureType.VOLTE_ENHANCED_CONFERENCE
+                || feature == FeatureType.VOLTE_CONF_REMOVE_MEMBER) {
+            if (mImsPhone != null) {
+                return mImsPhone.isFeatureSupported(feature);
+            }
+        }
+        // Add checking for other different features here.
+
+        // in the end, return false for unknown features.
+        Rlog.d(LOG_TAG, "isFeatureSupported = False with " + feature);
+        return false;
+    }
+    /// @}
+
+    @Override
+    public void switchAntenna(int callState, int ratMode) {
+        logUnexpectedCdmaMethodCall("switchAntenna");
     }
 }

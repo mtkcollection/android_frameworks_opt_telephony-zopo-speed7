@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -218,6 +223,12 @@ public class CdmaSmsAddress extends SmsAddress {
             addr.numberMode = NUMBER_MODE_DATA_NETWORK;
             if (address.indexOf('@') != -1) {
                 addr.ton = TON_NATIONAL_OR_EMAIL;
+            } else {
+                /*
+                 * SMS dont support the address like "abcd", it is not an email adress.
+                 * Add by VIA
+                 */
+                return null;
             }
         }
         addr.origBytes = origBytes;

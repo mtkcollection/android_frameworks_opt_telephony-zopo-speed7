@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,11 +30,15 @@ import android.os.Message;
 import android.os.PowerManager;
 import android.os.Registrant;
 import android.os.SystemClock;
+/// M: for conference SRVCC. @{
+import android.telecom.ConferenceParticipant;
+/// @}
 import android.telecom.Log;
 import android.telephony.DisconnectCause;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.Rlog;
 
+import com.android.ims.ImsConferenceState;
 import com.android.ims.ImsException;
 import com.android.ims.ImsStreamMediaProfile;
 import com.android.internal.telephony.CallStateException;
@@ -40,6 +49,11 @@ import com.android.internal.telephony.UUSInfo;
 
 import com.android.ims.ImsCall;
 import com.android.ims.ImsCallProfile;
+
+/// M: For VoLTE enhanced conference call. @{
+import java.util.ArrayList;
+/// @}
+import java.util.List;
 
 /**
  * {@hide}
@@ -89,6 +103,14 @@ public class ImsPhoneConnection extends Connection {
     //***** Constants
     private static final int PAUSE_DELAY_MILLIS = 3 * 1000;
     private static final int WAKE_LOCK_TIMEOUT_MILLIS = 60*1000;
+
+    /// M: @{
+    // For VoLTE enhanced conference call.
+    private ArrayList<String> mConfDialStrings = null;
+
+    // For conference SRVCC.
+    List<ConferenceParticipant> mConferenceParticipants = null;
+    /// @}
 
     //***** Inner Classes
 
@@ -159,8 +181,14 @@ public class ImsPhoneConnection extends Connection {
 
         mDialString = dialString;
 
-        mAddress = PhoneNumberUtils.extractNetworkPortionAlt(dialString);
-        mPostDialString = PhoneNumberUtils.extractPostDialPortion(dialString);
+        /// M: Ignore extraction for VoLTE SIP address which is NOT a PSTN phone number. @{
+        mAddress = dialString;
+        mPostDialString = "";
+        if (!PhoneNumberUtils.isUriNumber(dialString)) {
+            mAddress = PhoneNumberUtils.extractNetworkPortionAlt(dialString);
+            mPostDialString = PhoneNumberUtils.extractPostDialPortion(dialString);
+        }
+        /// @}
 
         //mIndex = -1;
 
@@ -334,6 +362,7 @@ public class ImsPhoneConnection extends Connection {
             mImsCall = null;
         }
         releaseWakeLock();
+
         return changed;
     }
 
@@ -562,11 +591,25 @@ public class ImsPhoneConnection extends Connection {
                 //when accepting WAITING call
                 //before accept WAITING call,
                 //the ACTIVE call should be held ahead
-                mParent.detach(this);
-                mParent = mOwner.mForegroundCall;
-                mParent.attach(this);
+
+                /// M: ALPS01979162. @{
+                if (mParent != mOwner.mHandoverCall) {
+                    Rlog.d(LOG_TAG, "update() - Switch Connection to foreground call:" + this);
+                    /// @}
+                    mParent.detach(this);
+                    mParent = mOwner.mForegroundCall;
+                    mParent.attach(this);
+                }
             }
         } else if (state == ImsPhoneCall.State.HOLDING) {
+            /// M: sometimes swap is triggered from lower layer. e.q. merge conference. @{
+            if (mParent == mOwner.mForegroundCall) {
+                Rlog.d(LOG_TAG, "update() - Switch Connection to background call:" + this);
+                mParent.detach(this);
+                mParent = mOwner.mBackgroundCall;
+                mParent.attach(this);
+            }
+            /// @}
             onStartedHolding();
         }
 
@@ -600,6 +643,31 @@ public class ImsPhoneConnection extends Connection {
                     "Failed to disconnect endpoint = " + endpoint);
         }
     }
+
+    /// M: For VoLTE enhanced conference call. @{
+    /**
+     * Invite one or more participants to the conference managed by this connection.
+     * @param numbers the numbers to invite into this conference.
+     * @hide
+     */
+    public void onInviteConferenceParticipants(List<String> numbers) {
+        ImsCall imsCall = getImsCall();
+        if (imsCall == null) {
+            return;
+        }
+
+        ArrayList<String> list = new ArrayList<String>();
+        list.addAll(numbers);
+        String[] participants = (String[]) list.toArray(new String[list.size()]);
+        try {
+            imsCall.inviteParticipants(participants);
+        } catch (ImsException e) {
+            Rlog.e(LOG_TAG,
+                "inviteConferenceParticipants: no call session and fail to invite participants "
+                + participants);
+        }
+    }
+    /// @}
 
     /**
      * Sets the conference connect time.  Used when an {@code ImsConference} is created to out of
@@ -717,7 +785,122 @@ public class ImsPhoneConnection extends Connection {
             sb.append(mImsCall);
         }
         sb.append("]");
+        /// M: @{
+        sb.append(" state:" + getState());
+        sb.append(" mParent:");
+        sb.append(getParentCallName());
+        /// @}
         return sb.toString();
     }
+
+    /// M:  @{
+    /**
+     get Call Id of this connection. Used when SRVCC, GSMCallTracker needs to know
+     the mapping between old Ims connection and new Gsm Connection, according to Call-ID.
+     @return Call Id
+     @hide
+    */
+    public int getCallId() {
+        ImsCall call = getImsCall();
+        if (call == null || call.getCallSession() == null) {
+            return -1;
+        }
+
+        String callId = call.getCallSession().getCallId();
+        if (callId == null) {
+            Rlog.d(LOG_TAG, "Abnormal! Call Id = null");
+            return -1;
+        }
+
+        return Integer.parseInt(callId);
+    }
+
+    private ImsPhoneCall.State getCallStateFromConferenceState(String status) {
+        if (status.equals(ImsConferenceState.STATUS_ALERTING)
+                || status.equals(ImsConferenceState.STATUS_PENDING)
+                || status.equals(ImsConferenceState.STATUS_DIALING_OUT)
+                || status.equals(ImsConferenceState.STATUS_DIALING_IN)) {
+            return ImsPhoneCall.State.ALERTING;
+        } else if (status.equals(ImsConferenceState.STATUS_CONNECT_FAIL)
+                || status.equals(ImsConferenceState.STATUS_DISCONNECTED)) {
+            return ImsPhoneCall.State.DISCONNECTED;
+        } else if (status.equals(ImsConferenceState.STATUS_ON_HOLD)) {
+            return ImsPhoneCall.State.HOLDING;
+        } else {
+            // STATUS_CONNECTED or others
+            return ImsPhoneCall.State.ACTIVE;
+        }
+    }
+
+    /**
+    * For VoLTE enhanced conference call.
+    * @param dialStrings the dial strings of multiple MO.
+    */
+    void setConfDialStrings(ArrayList<String> dialStrings) {
+        mConfDialStrings = dialStrings;
+    }
+
+    /**
+    * For VoLTE enhanced conference call.
+    * @return the array of the conference dial strings.
+    */
+    ArrayList<String> getConfDialStrings() {
+        return mConfDialStrings;
+    }
+
+    private String getParentCallName() {
+        if (mOwner == null) {
+            return "Unknown";
+        }
+
+        if (mParent == mOwner.mForegroundCall) {
+            return "Foreground Call";
+        } else if (mParent == mOwner.mBackgroundCall) {
+            return "Background Call";
+        } else if (mParent == mOwner.mRingingCall) {
+            return "Ringing Call";
+        } else if (mParent == mOwner.mHandoverCall) {
+            return "Handover Call";
+        } else {
+            return "Abnormal";
+        }
+    }
+
+    @Override
+    public void updateConferenceParticipants(List<ConferenceParticipant> conferenceParticipants) {
+        mConferenceParticipants = conferenceParticipants;
+        super.updateConferenceParticipants(conferenceParticipants);
+    }
+
+    /**
+     * After conference SRVCC, we need to restore the participants' address from XML.
+     * @param index the index(order) in the XML, start from 0.
+     * @return String the conference participant's address.
+     * @hide
+     */
+    public String getConferenceParticipantAddress(int index) {
+        String emptyAddress = "";
+
+        if (mConferenceParticipants == null) {
+            Rlog.d(LOG_TAG, "getConferenceParticipantAddress(): no XML information");
+            return emptyAddress;
+        }
+
+        if (index < 0 || index > mConferenceParticipants.size()) {
+            Rlog.d(LOG_TAG, "getConferenceParticipantAddress(): invalid index");
+            return emptyAddress;
+        }
+
+        ConferenceParticipant participant = mConferenceParticipants.get(index);
+        if (participant == null) {
+            Rlog.d(LOG_TAG, "getConferenceParticipantAddress(): empty participant info");
+            return emptyAddress;
+        }
+
+        Uri userEntity = participant.getHandle();
+        Rlog.d(LOG_TAG, "getConferenceParticipantAddress(): ret=" + userEntity);
+        return userEntity.toString();
+    }
+    /// @}
 }
 

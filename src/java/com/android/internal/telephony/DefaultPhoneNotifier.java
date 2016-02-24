@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +41,8 @@ import com.android.internal.telephony.CallManager;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.ITelephonyRegistry;
 import com.android.internal.telephony.PhoneConstants;
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
 
 import java.util.List;
 
@@ -44,7 +51,7 @@ import java.util.List;
  */
 public class DefaultPhoneNotifier implements PhoneNotifier {
     private static final String LOG_TAG = "DefaultPhoneNotifier";
-    private static final boolean DBG = false; // STOPSHIP if true
+    private static final boolean DBG = true; // STOPSHIP if true
 
     protected ITelephonyRegistry mRegistry;
 
@@ -57,6 +64,14 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
     @Override
     public void notifyPhoneState(Phone sender) {
         Call ringingCall = sender.getRingingCall();
+        /// M: CC055: Notify Call state with phoneType @{
+        /* For ECC without SIM or SIP call, subId will be invalid as -1 */
+        /* We cannot obtain Phone object via invalid subId, thus adding phoneId info */
+        /* PhoneId of ECC via GsmPhone is in the range of 0 to phone count -1 */
+        /* PhoneId of SIP call is DEFAULT_PHONE_ID, which is Integer.MAX_VALUE */
+        int phoneId = sender.getPhoneId();
+        int phoneType = sender.getPhoneType();
+        /// @}
         int subId = sender.getSubId();
         String incomingNumber = "";
         if (ringingCall != null && ringingCall.getEarliestConnection() != null){
@@ -64,8 +79,14 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
         }
         try {
             if (mRegistry != null) {
+                /// M: CC055: Notify Call state with phoneType @{
+                /*
                   mRegistry.notifyCallStateForSubscriber(subId,
                         convertCallState(sender.getState()), incomingNumber);
+                        */
+                mRegistry.notifyCallStateForPhoneInfo(phoneId, phoneType, subId,
+                      convertCallState(sender.getState()), incomingNumber);
+                /// @}
             }
         } catch (RemoteException ex) {
             // system process is dead
@@ -138,6 +159,12 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
     @Override
     public void notifyDataActivity(Phone sender) {
         int subId = sender.getSubId();
+
+        // M:[C2K][IRAT] Get Svlte Sub Id
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            subId = SvlteUtils.getSvlteSubIdBySubId(subId);
+        }
+
         try {
             if (mRegistry != null) {
                 mRegistry.notifyDataActivityForSubscriber(subId,
@@ -157,7 +184,7 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
     private void doNotifyDataConnection(Phone sender, String reason, String apnType,
             PhoneConstants.DataState state) {
         int subId = sender.getSubId();
-        long dds = SubscriptionManager.getDefaultDataSubId();
+        int dds = SubscriptionManager.getDefaultDataSubId();
         if (DBG) log("subId = " + subId + ", DDS = " + dds);
 
         // TODO
@@ -175,6 +202,23 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
         ServiceState ss = sender.getServiceState();
         if (ss != null) roaming = ss.getDataRoaming();
 
+        //M: ALPS01747520, get network type by sub when more than one SIM.
+        int networkType = ((telephony!=null) ? telephony.getDataNetworkType(subId) :
+                    TelephonyManager.NETWORK_TYPE_UNKNOWN);
+
+
+        // M:[C2K][IRAT] Show right type for PS network type for IRAT.
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            subId = SvlteUtils.getSvlteSubIdBySubId(sender.getSubId());
+            log("[IRAT] update Svlte sub:" + subId);
+        }
+
+        //M: For debug
+        if (DBG) {
+            log("doNotifyDataConnection " + "apnType=" + apnType + ",networkType="
+                + networkType + ", state=" + state);
+        }
+
         try {
             if (mRegistry != null) {
                 mRegistry.notifyDataConnectionForSubscriber(subId,
@@ -184,8 +228,7 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
                     apnType,
                     linkProperties,
                     networkCapabilities,
-                    ((telephony!=null) ? telephony.getDataNetworkType(subId) :
-                    TelephonyManager.NETWORK_TYPE_UNKNOWN),
+                    networkType,
                     roaming);
             }
         } catch (RemoteException ex) {
@@ -472,4 +515,29 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
     private void log(String s) {
         Rlog.d(LOG_TAG, s);
     }
+    ///M:Add for SVLTE. @{
+    /**
+     * Notify the Service state change for svlte.
+     * @param sender The phone to notify service state change
+     * @param svlteServiceState The svlte service state will be notified.
+     */
+    @Override
+    public void notifySvlteServiceStateChanged(Phone sender,
+            ServiceState svlteServiceState) {
+        int phoneId = sender.getPhoneId();
+        int subId = sender.getSubId();
+
+        Rlog.d(LOG_TAG, "notifySvLteServiceStateChanged: mRegistry="
+                + mRegistry + " ss=" + svlteServiceState + " sender=" + sender
+                + " phondId=" + phoneId + " subId=" + subId);
+        try {
+            if (mRegistry != null) {
+                mRegistry.notifyServiceStateForPhoneId(phoneId, subId,
+                        svlteServiceState);
+            }
+        } catch (RemoteException ex) {
+            // system process is dead
+        }
+    }
+    /// @}
 }

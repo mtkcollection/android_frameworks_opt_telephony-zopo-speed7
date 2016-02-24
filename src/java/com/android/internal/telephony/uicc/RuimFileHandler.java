@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -70,6 +75,11 @@ public final class RuimFileHandler extends IccFileHandler {
         return getCommonIccEFPath(efid);
     }
 
+    protected String getEFPath(int efid, boolean is7FFF) {
+        logd("[RuimFH]GetEFPath : efid = " + efid + ", is7FFF = " + is7FFF);
+        return getEFPath(efid);
+    }
+    
     @Override
     protected void logd(String msg) {
         Rlog.d(LOG_TAG, "[RuimFileHandler] " + msg);

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -184,6 +189,9 @@ public class WapPushOverSms implements ServiceConnection {
 
             byte[] header = new byte[headerLength];
             System.arraycopy(pdu, headerStartIndex, header, 0, header.length);
+            // MTK-START
+            pduDecoder.decodeHeaders(index, headerLength - index + headerStartIndex);
+            // MTK-END
 
             byte[] intentData;
 
@@ -238,6 +246,15 @@ public class WapPushOverSms implements ServiceConnection {
                         intent.putExtra("contentTypeParameters",
                                 pduDecoder.getContentParameters());
                         SubscriptionManager.putPhoneIdAndSubIdExtra(intent, phoneId);
+                        // MTK-START
+                        intent.putExtra("wspHeaders", pduDecoder.getHeaders());
+
+                        if (bundle != null) {
+                            Rlog.d(TAG, "put addr info into intent 1");
+                            intent.putExtra(Telephony.WapPush.ADDR, bundle.getString(Telephony.WapPush.ADDR));
+                            intent.putExtra(Telephony.WapPush.SERVICE_ADDR, bundle.getString(Telephony.WapPush.SERVICE_ADDR));
+                        }
+                        // MTK-END
 
                         int procRet = wapPushMan.processMessage(wapAppId, contentType, intent);
                         if (DBG) Rlog.v(TAG, "procRet:" + procRet);
@@ -264,9 +281,15 @@ public class WapPushOverSms implements ServiceConnection {
             int appOp;
 
             if (mimeType.equals(WspTypeDecoder.CONTENT_TYPE_B_MMS)) {
+                // MTK-START
+                Rlog.d(TAG, "WapPush set permission for RECEIVE_MMS");
+                // MTK-END
                 permission = android.Manifest.permission.RECEIVE_MMS;
                 appOp = AppOpsManager.OP_RECEIVE_MMS;
             } else {
+                // MTK-START
+                Rlog.d(TAG, "WapPush set permission for RECEIVE_WAP_PUSH");
+                // MTK-END
                 permission = android.Manifest.permission.RECEIVE_WAP_PUSH;
                 appOp = AppOpsManager.OP_RECEIVE_WAP_PUSH;
             }
@@ -279,6 +302,15 @@ public class WapPushOverSms implements ServiceConnection {
             intent.putExtra("data", intentData);
             intent.putExtra("contentTypeParameters", pduDecoder.getContentParameters());
             SubscriptionManager.putPhoneIdAndSubIdExtra(intent, phoneId);
+            // MTK-START
+            intent.putExtra("wspHeaders", pduDecoder.getHeaders());
+
+            if (bundle != null) {
+                Rlog.d(TAG, "put addr info into intent 2");
+                intent.putExtra(Telephony.WapPush.ADDR, bundle.getString(Telephony.WapPush.ADDR));
+                intent.putExtra(Telephony.WapPush.SERVICE_ADDR, bundle.getString(Telephony.WapPush.SERVICE_ADDR));
+            }
+            // MTK-END
 
             // Direct the intent to only the default MMS app. If we can't find a default MMS app
             // then sent it to all broadcast receivers.
@@ -471,4 +503,21 @@ public class WapPushOverSms implements ServiceConnection {
         }
         return false;
     }
+
+    // MTK-START
+    /*
+     * Add for wappush to get address and service address.
+     * Address and service address will be stored in bundle
+     * dispatchWapPdu(byte[] pdu, Bundle extra) will be called by framework
+     */
+    private Bundle bundle;
+    public int dispatchWapPdu(byte[] pdu,  BroadcastReceiver receiver, InboundSmsHandler handler, Bundle extra) {
+        if (DBG) Rlog.i(TAG, "dispathchWapPdu!"
+            + extra.getString(Telephony.WapPush.ADDR) + " "
+            + extra.getString(Telephony.WapPush.SERVICE_ADDR));
+
+        bundle = extra;
+        return dispatchWapPdu(pdu, receiver, handler);
+    }
+    // MTK-END
 }

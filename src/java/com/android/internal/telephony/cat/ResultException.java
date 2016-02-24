@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -60,14 +65,16 @@ public class ResultException extends CatException {
     }
 
     public ResultException(ResultCode result, int additionalInfo) {
-        this(result);
+
+        super();
+        mResult = result;
+        mAdditionalInfo = additionalInfo;
+        mExplanation = "";
 
         if (additionalInfo < 0) {
             throw new AssertionError(
                     "Additional info must be greater than zero!");
         }
-
-        mAdditionalInfo = additionalInfo;
     }
 
     public ResultException(ResultCode result, int additionalInfo, String explanation) {

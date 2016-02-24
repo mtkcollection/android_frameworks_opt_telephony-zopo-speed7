@@ -163,7 +163,8 @@ public class ImsPhoneCall extends Call {
      */
     /*package*/ boolean
     isFull() {
-        return mConnections.size() == ImsPhoneCallTracker.MAX_CONNECTIONS_PER_CALL;
+        return mConnections.size() ==
+            ImsPhoneCallTracker.MAX_CONNECTIONS_PER_CALL;
     }
 
     //***** Called from ImsPhoneCallTracker

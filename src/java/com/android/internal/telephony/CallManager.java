@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,6 +36,9 @@ import android.telephony.TelephonyManager;
 import android.telephony.PhoneStateListener;
 import android.telephony.ServiceState;
 import android.telephony.Rlog;
+/// M: CC051: Convert phoneId-based to subId-based API for CallManager bug fix @{
+import android.telephony.SubscriptionManager;
+/// @}
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -60,7 +68,7 @@ public final class CallManager {
 
     private static final String LOG_TAG ="CallManager";
     private static final boolean DBG = true;
-    private static final boolean VDBG = false;
+    private static final boolean VDBG = true;
 
     private static final int EVENT_DISCONNECT = 100;
     private static final int EVENT_PRECISE_CALL_STATE_CHANGED = 101;
@@ -184,6 +192,11 @@ public final class CallManager {
 
     protected final RegistrantList mTtyModeReceivedRegistrants
     = new RegistrantList();
+
+    /* M: SS part */
+    private long mLastMmiCompletedTime = 0;
+    private static final long MMI_COMPLETED_MIN_INTERVAL = 100;
+    /* M: SS part end */
 
     private CallManager() {
         mPhones = new ArrayList<Phone>();
@@ -440,11 +453,10 @@ public final class CallManager {
                         phone.getPhoneName() + " " + phone + ")");
             }
 
-            // ImsPhone is unregistered in PhoneBase.updateImsPhone()
-            //Phone vPhone = basePhone.getImsPhone();
-            //if (vPhone != null) {
-            //   unregisterPhone(vPhone);
-            //}
+            Phone vPhone = basePhone.getImsPhone();
+            if (vPhone != null) {
+               unregisterPhone(vPhone);
+            }
 
             mPhones.remove(basePhone);
             mRingingCalls.remove(basePhone.getRingingCall());
@@ -2297,12 +2309,17 @@ public final class CallManager {
                     Connection c = (Connection) ((AsyncResult) msg.obj).result;
                     int subId = c.getCall().getPhone().getSubId();
                     if (getActiveFgCallState(subId).isDialing() || hasMoreThanOneRingingCall()) {
+                        /// M: CC050: Remove handling for MO/MT conflict, not hangup MT @{
+                        if (VDBG) Rlog.d(LOG_TAG, "MO/MT conflict! MO should be hangup by MD");
+                        /*
                         try {
                             Rlog.d(LOG_TAG, "silently drop incoming call: " + c.getCall());
                             c.getCall().hangup();
                         } catch (CallStateException e) {
                             Rlog.w(LOG_TAG, "new ringing connection", e);
                         }
+                        */
+                        /// @}
                     } else {
                         mNewRingingConnectionRegistrants.notifyRegistrants((AsyncResult) msg.obj);
                     }
@@ -2356,6 +2373,18 @@ public final class CallManager {
                     break;
                 case EVENT_MMI_COMPLETE:
                     if (VDBG) Rlog.d(LOG_TAG, " handleMessage (EVENT_MMI_COMPLETE)");
+                    /* M: SS part */
+                    if (VDBG) {
+                        Rlog.d(LOG_TAG, " handleMessage (EVENT_MMI_COMPLETE)"
+                            + ", handler = " + this);
+                    }
+                    long curTime = System.currentTimeMillis();
+                    if ((curTime >= mLastMmiCompletedTime)
+                            && ((curTime - mLastMmiCompletedTime) < MMI_COMPLETED_MIN_INTERVAL)) {
+                        break;
+                    }
+                    mLastMmiCompletedTime = curTime;
+                    /* M: SS part end */
                     mMmiCompleteRegistrants.notifyRegistrants((AsyncResult) msg.obj);
                     break;
                 case EVENT_ECM_TIMER_RESET:
@@ -2411,25 +2440,28 @@ public final class CallManager {
         Call call;
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < TelephonyManager.getDefault().getPhoneCount(); i++) {
+            /// M: CC051: Convert phoneId-based to subId-based API for CallManager bug fix @{
+            int subId = SubscriptionManager.getSubIdUsingPhoneId(i);
             b.append("CallManager {");
-            b.append("\nstate = " + getState(i));
-            call = getActiveFgCall(i);
+            b.append("\nstate = " + getState(subId));
+            call = getActiveFgCall(subId);
             if (call != null) {
-                b.append("\n- Foreground: " + getActiveFgCallState(i));
+                b.append("\n- Foreground: " + getActiveFgCallState(subId));
                 b.append(" from " + call.getPhone());
-                b.append("\n  Conn: ").append(getFgCallConnections(i));
+                b.append("\n  Conn: ").append(getFgCallConnections(subId));
             }
-            call = getFirstActiveBgCall(i);
+            call = getFirstActiveBgCall(subId);
             if (call != null) {
                 b.append("\n- Background: " + call.getState());
                 b.append(" from " + call.getPhone());
-                b.append("\n  Conn: ").append(getBgCallConnections(i));
+                b.append("\n  Conn: ").append(getBgCallConnections(subId));
             }
-            call = getFirstActiveRingingCall(i);
+            call = getFirstActiveRingingCall(subId);
             if (call != null) {
                 b.append("\n- Ringing: " +call.getState());
                 b.append(" from " + call.getPhone());
             }
+            /// @}
         }
 
         for (Phone phone : getAllPhones()) {

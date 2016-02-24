@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,10 @@ import com.android.internal.telephony.GsmAlphabet.TextEncodingDetails;
 import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.util.BitwiseInputStream;
 import com.android.internal.util.BitwiseOutputStream;
+// MTK_START
+import com.mediatek.internal.telephony.cdma.ISmsInterfaces;
+import com.mediatek.internal.telephony.cdma.ViaPolicyManager;
+// MTK_END
 
 import java.util.ArrayList;
 import java.util.TimeZone;
@@ -39,6 +48,11 @@ import java.util.TimeZone;
  */
 public final class BearerData {
     private final static String LOG_TAG = "BearerData";
+
+    // MTK-START
+    // Right Sms interface class
+    private static ISmsInterfaces sSmsInterfaces = ViaPolicyManager.getSmsInterfaces();
+    // MTK-END
 
     /**
      * Bearer Data Subparameter Identifiers
@@ -230,7 +244,7 @@ public final class BearerData {
     public static class TimeStamp extends Time {
 
         public TimeStamp() {
-            super(TimeZone.getDefault().getID());   // 3GPP2 timestamps use the local timezone
+            super(Time.TIMEZONE_UTC);   // 3GPP2 timestamps use the local timezone
         }
 
         public static TimeStamp fromByteArray(byte[] data) {
@@ -359,7 +373,7 @@ public final class BearerData {
     public ArrayList<CdmaSmsCbProgramResults> serviceCategoryProgramResults;
 
 
-    private static class CodingException extends Exception {
+    public static class CodingException extends Exception {
         public CodingException(String s) {
             super(s);
         }
@@ -453,7 +467,7 @@ public final class BearerData {
         outStream.skip(3);
     }
 
-    private static int countAsciiSeptets(CharSequence msg, boolean force) {
+    public static int countAsciiSeptets(CharSequence msg, boolean force) {
         int msgLen = msg.length();
         if (force) return msgLen;
         for (int i = 0; i < msgLen; i++) {
@@ -474,49 +488,12 @@ public final class BearerData {
      */
     public static TextEncodingDetails calcTextEncodingDetails(CharSequence msg,
             boolean force7BitEncoding, boolean isEntireMsg) {
-        TextEncodingDetails ted;
-        int septets = countAsciiSeptets(msg, force7BitEncoding);
-        if (septets != -1 && septets <= SmsConstants.MAX_USER_DATA_SEPTETS) {
-            ted = new TextEncodingDetails();
-            ted.msgCount = 1;
-            ted.codeUnitCount = septets;
-            ted.codeUnitsRemaining = SmsConstants.MAX_USER_DATA_SEPTETS - septets;
-            ted.codeUnitSize = SmsConstants.ENCODING_7BIT;
-        } else {
-            ted = com.android.internal.telephony.gsm.SmsMessage.calculateLength(
-                    msg, force7BitEncoding);
-            if (ted.msgCount == 1 && ted.codeUnitSize == SmsConstants.ENCODING_7BIT &&
-                    isEntireMsg) {
-                // We don't support single-segment EMS, so calculate for 16-bit
-                // TODO: Consider supporting single-segment EMS
-                ted.codeUnitCount = msg.length();
-                int octets = ted.codeUnitCount * 2;
-                if (octets > SmsConstants.MAX_USER_DATA_BYTES) {
-                    // If EMS is not supported, break down EMS into single segment SMS
-                    // and add page info " x/y".
-                    // In the case of UCS2 encoding type, we need 8 bytes for this
-                    // but we only have 6 bytes from UDH, so truncate the limit for
-                    // each segment by 2 bytes (1 char).
-                    int max_user_data_bytes_with_header =
-                            SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER;
-                    if (!android.telephony.SmsMessage.hasEmsSupport()) {
-                        // make sure total number of segments is less than 10
-                        if (octets <= 9 * (max_user_data_bytes_with_header - 2))
-                            max_user_data_bytes_with_header -= 2;
-                    }
-
-                    ted.msgCount = (octets + (max_user_data_bytes_with_header - 1)) /
-                            max_user_data_bytes_with_header;
-                    ted.codeUnitsRemaining = ((ted.msgCount *
-                            max_user_data_bytes_with_header) - octets) / 2;
-                } else {
-                    ted.msgCount = 1;
-                    ted.codeUnitsRemaining = (SmsConstants.MAX_USER_DATA_BYTES - octets)/2;
-                }
-                ted.codeUnitSize = SmsConstants.ENCODING_16BIT;
-            }
-        }
-        return ted;
+        // via modified.
+        Rlog.d(LOG_TAG, "calcTextEncodingDetails: isEntireMsg = " + isEntireMsg);
+        //Rlog.d(LOG_TAG, "(send use this)sync with divide method, when divide message, use " +
+        //        "sSmsInterfaces.calcTextEncodingDetails(msg, force7BitEncoding) to" +
+        //        " get how many segments the message is divided into, search XXXXXX for divide");
+        return sSmsInterfaces.calcTextEncodingDetails(msg, force7BitEncoding);
     }
 
     private static byte[] encode7bitAscii(String msg, boolean force)
@@ -553,12 +530,12 @@ public final class BearerData {
         }
     }
 
-    private static class Gsm7bitCodingResult {
-        int septets;
-        byte[] data;
+    public static class Gsm7bitCodingResult {
+        public int septets;
+        public byte[] data;
     }
 
-    private static Gsm7bitCodingResult encode7bitGsm(String msg, int septetOffset, boolean force)
+    public static Gsm7bitCodingResult encode7bitGsm(String msg, int septetOffset, boolean force)
         throws CodingException
     {
         try {
@@ -715,8 +692,11 @@ public final class BearerData {
          * a side effect of encoding?  If not, we could avoid data
          * copies by passing outStream directly.
          */
-        encodeUserDataPayload(bData.userData);
+
+        // via modified.
         bData.hasUserDataHeader = bData.userData.userDataHeader != null;
+        sSmsInterfaces.encodeUserDataPayload(bData.userData);
+        // via modified.
 
         if (bData.userData.payload.length > SmsConstants.MAX_USER_DATA_BYTES) {
             throw new CodingException("encoded user data too large (" +
@@ -919,6 +899,11 @@ public final class BearerData {
             if (bData.userData != null) {
                 outStream.write(8, SUBPARAM_USER_DATA);
                 encodeUserData(bData, outStream);
+            }
+            // via added.
+            if (bData.msgCenterTimeStamp != null) {
+                outStream.write(8, SUBPARAM_MESSAGE_CENTER_TIME_STAMP);
+                sSmsInterfaces.encodeTimeStamp(bData, outStream);
             }
             if (bData.callbackNumber != null) {
                 outStream.write(8, SUBPARAM_CALLBACK_NUMBER);
@@ -1176,10 +1161,13 @@ public final class BearerData {
 
         case UserData.ENCODING_IA5:
         case UserData.ENCODING_7BIT_ASCII:
-            userData.payloadStr = decode7bitAscii(userData.payload, offset, userData.numFields);
+            // via modified.
+            userData.payloadStr = sSmsInterfaces.decode7bitAscii(userData.payload,
+                        offset, userData.numFields);
             break;
         case UserData.ENCODING_UNICODE_16:
-            userData.payloadStr = decodeUtf16(userData.payload, offset, userData.numFields);
+            userData.payloadStr = sSmsInterfaces.decodeUtf16(userData.payload,
+                    offset, userData.numFields);
             break;
         case UserData.ENCODING_GSM_7BIT_ALPHABET:
             userData.payloadStr = decode7bitGsm(userData.payload, offset, userData.numFields);
@@ -1528,7 +1516,7 @@ public final class BearerData {
         if (paramBits >= EXPECTED_PARAM_SIZE) {
             paramBits -= EXPECTED_PARAM_SIZE;
             decodeSuccess = true;
-            bData.deferredDeliveryTimeRelative = inStream.read(8);
+            bData.validityPeriodRelative = inStream.read(8);
         }
         if ((! decodeSuccess) || (paramBits > 0)) {
             Rlog.d(LOG_TAG, "VALIDITY_PERIOD_RELATIVE decode " +
@@ -1536,7 +1524,7 @@ public final class BearerData {
                       " (extra bits = " + paramBits + ")");
         }
         inStream.skip(paramBits);
-        bData.deferredDeliveryTimeRelativeSet = decodeSuccess;
+        bData.validityPeriodRelativeSet = decodeSuccess;
         return decodeSuccess;
     }
 
@@ -1548,7 +1536,7 @@ public final class BearerData {
         if (paramBits >= EXPECTED_PARAM_SIZE) {
             paramBits -= EXPECTED_PARAM_SIZE;
             decodeSuccess = true;
-            bData.validityPeriodRelative = inStream.read(8);
+            bData.deferredDeliveryTimeRelative = inStream.read(8);
         }
         if ((! decodeSuccess) || (paramBits > 0)) {
             Rlog.d(LOG_TAG, "DEFERRED_DELIVERY_TIME_RELATIVE decode " +
@@ -1556,7 +1544,7 @@ public final class BearerData {
                       " (extra bits = " + paramBits + ")");
         }
         inStream.skip(paramBits);
-        bData.validityPeriodRelativeSet = decodeSuccess;
+        bData.deferredDeliveryTimeRelativeSet = decodeSuccess;
         return decodeSuccess;
     }
 
@@ -1906,6 +1894,17 @@ public final class BearerData {
      * @return an instance of BearerData.
      */
     public static BearerData decode(byte[] smsData, int serviceCategory) {
+        /*
+         * VIA add
+         * In 3GPP2 SMS protocol, the bearer data field is optional for some kind SMS,
+         * So we just return null object, istead of throwing a null point excetion,
+         * which can crash the SMS process.
+         */
+        if (smsData == null) {
+            Rlog.e(LOG_TAG, "bearerData == null, cant go on to decode");
+            return null;
+        }
+
         try {
             BitwiseInputStream inStream = new BitwiseInputStream(smsData);
             BearerData bData = new BearerData();
@@ -2020,4 +2019,56 @@ public final class BearerData {
         }
         return null;
     }
+
+    // MTK-START: [ALPS00094531] Orange feature SMS Encoding Type Setting by mtk80589 in 2011.11.22.
+    /**
+     * Calculate the message text encoding length, fragmentation, and other details.
+     *
+     * @param msg message text
+     * @param force7BitEncoding ignore (but still count) illegal characters if true
+     * @param encodingType the encoding type of content of message(GSM 7-bit, Unicode or Automatic)
+     * @return septet count, or -1 on failure
+     */
+    public static TextEncodingDetails calcTextEncodingDetails(CharSequence msg,
+            boolean force7BitEncoding, int encodingType) {
+        TextEncodingDetails ted;
+        int septets = countAsciiSeptets(msg, force7BitEncoding);
+        if(encodingType == SmsConstants.ENCODING_16BIT) {
+            Rlog.d(LOG_TAG, "16bit in cdma");
+            septets = -1;
+        }
+        if (septets != -1 && septets <= SmsConstants.MAX_USER_DATA_SEPTETS) {
+            ted = new TextEncodingDetails();
+            ted.msgCount = 1;
+            ted.codeUnitCount = septets;
+            ted.codeUnitsRemaining = SmsConstants.MAX_USER_DATA_SEPTETS - septets;
+            ted.codeUnitSize = SmsConstants.ENCODING_7BIT;
+        } else {
+            //Rlog.d(LOG_TAG, "(divide message use this)sync with send method, when send, use " +
+            //        "sSmsInterfaces.calcTextEncodingDetails(msg, force7BitEncoding) to" +
+            //        " get encode type and send with the encode type, search XXXXXX for send");
+            /*ted = com.android.internal.telephony.gsm.SmsMessage.calculateLength(
+                    msg, force7BitEncoding, encodingType);*/
+            Rlog.d(LOG_TAG, "gsm can understand the control character, but cdma ignore it(<0x20)");
+            ted = sSmsInterfaces.calcTextEncodingDetails(msg, force7BitEncoding);
+            if (ted.msgCount == 1 && ted.codeUnitSize == SmsConstants.ENCODING_7BIT) {
+                // We don't support single-segment EMS, so calculate for 16-bit
+                // TODO: Consider supporting single-segment EMS
+                ted.codeUnitCount = msg.length();
+                int octets = ted.codeUnitCount * 2;
+                if (octets > SmsConstants.MAX_USER_DATA_BYTES) {
+                    ted.msgCount = (octets + (SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER - 1)) /
+                            SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER;
+                    ted.codeUnitsRemaining = ((ted.msgCount *
+                            SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER) - octets) / 2;
+                } else {
+                    ted.msgCount = 1;
+                    ted.codeUnitsRemaining = (SmsConstants.MAX_USER_DATA_BYTES - octets)/2;
+                }
+                ted.codeUnitSize = SmsConstants.ENCODING_16BIT;
+            }
+        }
+        return ted;
+    }
+    // MTK-END: [ALPS00094531] Orange feature SMS Encoding Type Setting by mtk80589 in 2011.11.22.
 }

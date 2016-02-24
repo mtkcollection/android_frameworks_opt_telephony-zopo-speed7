@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -49,6 +54,34 @@ public abstract class Connection {
                 android.telecom.Connection.VideoProvider videoProvider);
         public void onAudioQualityChanged(int audioQuality);
         public void onConferenceParticipantsChanged(List<ConferenceParticipant> participants);
+        /// M: For VoLTE conference. @{
+        /**
+         * For VoLTE enhanced conference call, notify invite conf. participants completed.
+         * @param isSuccess is success or not.
+         * @hide
+         */
+        public void onConferenceParticipantsInvited(boolean isSuccess);
+
+        /**
+         * For VoLTE conference SRVCC, notify the new participant connections in GsmPhone.
+         * @param radioConnections the participant connections in GsmPhone
+         * @hide
+         */
+        public void onConferenceConnectionsConfigured(ArrayList<Connection> radioConnections);
+        /// @}
+
+        /// M: Notify Telecom to remove pending action by onActionFailed(). @{
+        public void onSuppServiceFailed(int actionCode);
+        /// @}
+
+        /// M: WFC call type update. @{
+        /**
+         * To notify that call type is VoLTE or ViWiFi.
+         * @param callType the call type of current call
+         * @hide
+         */
+        public void onCallTypeChanged(int callType);
+        /// @}
     }
 
     /**
@@ -68,6 +101,26 @@ public abstract class Connection {
         public void onAudioQualityChanged(int audioQuality) {}
         @Override
         public void onConferenceParticipantsChanged(List<ConferenceParticipant> participants) {}
+        /// M: For VoLTE conference. @{
+
+        // for enhanced conference call
+        @Override
+        public void onConferenceParticipantsInvited(boolean isSuccess) {}
+
+        // for conference SRVCC.
+        @Override
+        public void onConferenceConnectionsConfigured(ArrayList<Connection> radioConnections) {}
+        /// @}
+
+        /// M: Notify Telecom to remove pending action by onActionFailed(). @{
+        @Override
+        public void onSuppServiceFailed(int actionCode) {}
+        /// @}
+
+        /// M: WFC call type update. @{
+        @Override
+        public void onCallTypeChanged(int callType) {}
+        /// @}
     }
 
     public static final int AUDIO_QUALITY_STANDARD = 1;
@@ -112,6 +165,24 @@ public abstract class Connection {
     private android.telecom.Connection.VideoProvider mVideoProvider;
     public Call.State mPreHandoverState = Call.State.IDLE;
 
+    /// M: for Ims Conference SRVCC. @{
+    public boolean mPreMultipartyState = false;
+    /// @}
+
+    /// M: CC018: Redirecting number via COLP @{
+    String mRedirectingAddress;
+    /// @}
+    /// M: CC017: Forwarding number via EAIC @{
+    String mForwardingAddress;
+    /// @}
+
+    /// M: WFC call type update. @{
+    /**
+     * To store call type of the current connection.
+     */
+    private int mCallType = 0;
+    /// @}
+
     /* Instance Methods */
 
     /**
@@ -125,6 +196,12 @@ public abstract class Connection {
         return mAddress;
     }
 
+    /// M: CC016: number presentation via CLIP @{
+    public void setNumberPresentation(int num) {
+        mNumberPresentation = num;
+    }
+    /// @}
+
     /**
      * Gets CNAP name associated with connection.
      * @return cnap name or null if unavailable
@@ -132,6 +209,12 @@ public abstract class Connection {
     public String getCnapName() {
         return mCnapName;
     }
+
+    /// M: CC010: Add RIL interface @{
+    public void setCnapName(String cnapName) {
+        this.mCnapName = cnapName;
+    }
+    /// @}
 
     /**
      * Get original dial string.
@@ -277,6 +360,18 @@ public abstract class Connection {
         return mPreHandoverState;
     }
 
+    /// M: for Ims Conference SRVCC. @{
+    /**
+     * If this connection went through handover return the isMultiparty state
+     *  of the call that contained this connection before handover.
+     * @return boolean is multiparty or not.
+     * @hide
+     */
+    public boolean isMultipartyBeforeHandover() {
+        return mPreMultipartyState;
+    }
+    /// @}
+
     /**
      * isAlive()
      *
@@ -316,6 +411,13 @@ public abstract class Connection {
      * Hangup individual Connection
      */
     public abstract void hangup() throws CallStateException;
+
+    /**
+     * Hangup individual Connection for RingingConn -Add by mtk01411 [ALPS00475147]
+     */
+    public void hangup(int discRingingConnCause) throws CallStateException {
+        //just add default implementation
+    }
 
     /**
      * Separate this call from its owner Call and assigns it to a new Call
@@ -592,6 +694,30 @@ public abstract class Connection {
     public void onDisconnectConferenceParticipant(Uri endpoint) {
     }
 
+    /// M: For VoLTE conference. @{
+    /**
+     * Notify when the task of onInviteConferenceParticipants() is completed.
+     * @param isSuccess is success or not.
+     * @hide
+     */
+    public void notifyConferenceParticipantsInvited(boolean isSuccess) {
+        for (Listener l : mListeners) {
+            l.onConferenceParticipantsInvited(isSuccess);
+        }
+    }
+
+    /**
+     * Notify when the new participant connections in GsmPhone are maded.
+     * @param radioConnections new participant connections in GsmPhone
+     * @hide
+     */
+    public void notifyConferenceConnectionsConfigured(ArrayList<Connection> radioConnections) {
+        for (Listener l : mListeners) {
+            l.onConferenceConnectionsConfigured(radioConnections);
+        }
+    }
+    /// @}
+
     /**
      * Build a human representation of a connection instance, suitable for debugging.
      * Don't log personal stuff unless in debug mode.
@@ -613,4 +739,78 @@ public abstract class Connection {
                 .append(" post dial state: " + getPostDialState());
         return str.toString();
     }
+
+    /// M: CC018: Redirecting number via COLP @{
+    /**
+     * Gets redirecting address (e.g. phone number) associated with connection.
+     *
+     * @return address or null if unavailable
+    */
+    public String getRedirectingAddress() {
+       return mRedirectingAddress;
+    }
+
+    /**
+     * Sets redirecting address (e.g. phone number) associated with connection.
+     *
+    */
+    public void setRedirectingAddress(String address) {
+        mRedirectingAddress = address;
+    }
+    /// @}
+
+    /// M: CC017: Forwarding number via EAIC @{
+    /**
+     * Gets forwarding address (e.g. phone number) associated with connection.
+     * A makes call to B and B redirects(Forwards) this call to C, the forwarding address is B.
+     * @return address or null if unavailable
+    */
+    public String getForwardingAddress() {
+       return mForwardingAddress;
+    }
+	
+    /** 
+     * Sets forwarding address (e.g. phone number) associated with connection.
+     * A makes call to B and B redirects(Forwards) this call to C, the forwarding address is B.
+    */
+    public void setForwardingAddress (String address) {
+       mForwardingAddress = address;
+    }
+    /// @}
+
+    /// M: Notify Telecom when Merge/Resume/Hold fails. @{
+    /**
+     * Notifies listeners when SS action fails.
+     *
+     * @param actionCode SS action.
+     */
+    public void notifySuppServiceFailed(int actionCode) {
+        for (Listener l : mListeners) {
+            l.onSuppServiceFailed(actionCode);
+        }
+    }
+    /// @}
+
+    /// M: WFC call type update. @{
+    /**
+     * To notify call type(VoLTE or VoWIFI).
+     *
+     * @param callType The call type value.
+    */
+    public void setCallType(int callType) {
+       mCallType = callType;
+       for (Listener l : mListeners) {
+          l.onCallTypeChanged(callType);
+       }
+    }
+
+    /**
+     * Returns the call type for the connection.
+     *
+     * @return The call type for the connection.
+     */
+    public int getCallType() {
+        return mCallType;
+    }
+    /// @}
 }

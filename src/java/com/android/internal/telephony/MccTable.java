@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,6 +42,9 @@ import java.util.Locale;
 import libcore.icu.ICU;
 import libcore.icu.TimeZoneNames;
 
+import com.mediatek.common.telephony.ITelephonyExt;
+import com.mediatek.common.MPlugin;
+
 /**
  * Mobile Country Code
  *
@@ -51,14 +59,20 @@ public final class MccTable {
         final int mMcc;
         final String mIso;
         final int mSmallestDigitsMnc;
+        String mLanguage;
 
         MccEntry(int mnc, String iso, int smallestDigitsMCC) {
+            this(mnc, iso, smallestDigitsMCC, null);
+        }
+
+        MccEntry(int mnc, String iso, int smallestDigitsMCC, String language) {
             if (iso == null) {
                 throw new NullPointerException();
             }
             mMcc = mnc;
             mIso = iso;
             mSmallestDigitsMnc = smallestDigitsMCC;
+            mLanguage = language;
         }
 
         @Override
@@ -88,11 +102,21 @@ public final class MccTable {
         MccEntry entry = entryForMcc(mcc);
         if (entry == null) {
             return null;
+        } else {
+            Locale locale;
+            if (entry.mLanguage == null) {
+                locale = new Locale(entry.mIso);
+                Slog.d(LOG_TAG, "defaultTimeZoneForMcc: mcc=" + mcc + ", mIso=" + entry.mIso);
+            } else {
+                locale = new Locale(entry.mLanguage, entry.mIso);
+                Slog.d(LOG_TAG, "updateMccMncConfiguration: mcc=" + mcc +
+                                        ", mLanguage=" + entry.mLanguage +
+                                        ", mIso=" + entry.mIso);
+            }
+            String[] tz = TimeZoneNames.forLocale(locale);
+            if (tz.length == 0) return null;
+            return tz[0];
         }
-        Locale locale = new Locale("", entry.mIso);
-        String[] tz = TimeZoneNames.forLocale(locale);
-        if (tz.length == 0) return null;
-        return tz[0];
     }
 
     /**
@@ -188,7 +212,14 @@ public final class MccTable {
             Locale locale = null;
             if (mcc != 0) {
                 setTimezoneFromMccIfNeeded(context, mcc);
+/* Vanzo:yujianpeng on: Thu, 25 Jun 2015 14:07:47 +0800
+ * language don't depend sim
                 locale = getLocaleFromMcc(context, mcc);
+ */
+                if(!com.android.featureoption.FeatureOption.VANZO_FEATURE_CHANGE_LANGUAGE_NOT_BY_SIM){
+                    locale = getLocaleFromMcc(context, mcc);
+                }
+// End of Vanzo:yujianpeng
             }
             if (fromServiceState) {
                 setWifiCountryCodeFromMcc(context, mcc);
@@ -229,7 +260,16 @@ public final class MccTable {
     // we don't want to change the locale if the user inserts a new SIM or a new version of Android
     // is better at recognizing MCC values than an older version.
     private static boolean canUpdateLocale(Context context) {
+/* Vanzo:fenghaitao on: Fri, 17 Jul 2015 16:29:31 +0800
+ *  language chanage depend sim
         return !(userHasPersistedLocale() || isDeviceProvisioned(context));
+  */
+        if(!com.android.featureoption.FeatureOption.VANZO_FEATURE_CHANGE_LANGUAGE_NOT_BY_SIM){
+            return !(userHasPersistedLocale());
+        }else{
+            return !(userHasPersistedLocale() || isDeviceProvisioned(context));
+        }
+// End of Vanzo:fenghaitao
     }
 
     private static boolean userHasPersistedLocale() {
@@ -265,9 +305,27 @@ public final class MccTable {
         if (country == null) {
             country = ""; // The Locale constructor throws if passed null.
         }
+/* Vanzo:yujianpeng on: Mon, 13 Jul 2015 09:54:00 +0800
+ * language don't depend sim
+ */
+        if(com.android.featureoption.FeatureOption.VANZO_FEATURE_CHANGE_LANGUAGE_NOT_BY_SIM){
+            return null;
+        }
+// End of Vanzo:yujianpeng
 
         // Check whether a developer is trying to test an arbitrary MCC.
         boolean debuggingMccOverride = isDebuggingMccOverride();
+
+/* Vanzo:fenghaitao on: Wed, 22 Jul 2015 16:47:03 +0800
+ * setupwizard depend sim
+  */
+        if(!com.android.featureoption.FeatureOption.VANZO_FEATURE_CHANGE_LANGUAGE_NOT_BY_SIM){
+            if(Boolean.valueOf(SystemProperties.get("persist.sys.language_by_sim", "true"))){
+                debuggingMccOverride = true;
+                SystemProperties.set("persist.sys.language_by_sim","false");
+            }
+        }
+// End of Vanzo:fenghaitao
 
         // If this is a regular user and they already have a persisted locale, we're done.
         if (!(debuggingMccOverride || canUpdateLocale(context))) {
@@ -353,6 +411,19 @@ public final class MccTable {
             Configuration config = new Configuration();
             config.setLocale(locale);
             config.userSetLocale = false;
+
+            try {
+                ITelephonyExt ITelExt = MPlugin.createInstance(ITelephonyExt.class.getName(), context);
+                if(ITelExt != null && ITelExt.isSetLanguageBySIM()) {
+                    config.simSetLocale = false;
+                } else if (ITelExt == null) {
+                    Slog.e(LOG_TAG, "Fail to create ITelephonyExt");
+                }
+            } catch (Exception e) {
+                Slog.e(LOG_TAG, "Fail to create plug-in");
+                e.printStackTrace();
+            }
+
             Slog.d(LOG_TAG, "setSystemLocale: updateLocale config=" + config);
             try {
                 ActivityManagerNative.getDefault().updateConfiguration(config);
@@ -560,7 +631,7 @@ public final class MccTable {
 		sTable.add(new MccEntry(457,"la",2));	//Lao People's Democratic Republic
 		sTable.add(new MccEntry(460,"cn",2));	//China (People's Republic of)
 		sTable.add(new MccEntry(461,"cn",2));	//China (People's Republic of)
-		sTable.add(new MccEntry(466,"tw",2));	//"Taiwan, China"
+        sTable.add(new MccEntry(466, "tw", 2, "zh"));  //"Taiwan"
 		sTable.add(new MccEntry(467,"kp",2));	//Democratic People's Republic of Korea
 		sTable.add(new MccEntry(470,"bd",2));	//Bangladesh (People's Republic of)
 		sTable.add(new MccEntry(472,"mv",2));	//Maldives (Republic of)

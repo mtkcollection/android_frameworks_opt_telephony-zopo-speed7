@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,18 +23,25 @@ package com.android.internal.telephony.dataconnection;
 
 import android.app.PendingIntent;
 import android.content.Context;
+import android.net.ConnectivityManager; //M: ePDG support
 import android.net.NetworkConfig;
+import android.net.NetworkInfo; //M: ePDG support
+
 import android.telephony.Rlog;
 
 import com.android.internal.R;
 import com.android.internal.telephony.DctConstants;
 import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.PhoneConstants;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+
+//VoLTE
+import com.mediatek.internal.telephony.DefaultBearerConfig;
 
 /**
  * Maintain the Apn context
@@ -88,6 +100,21 @@ public class ApnContext {
      */
     private boolean mConcurrentVoiceAndDataAllowed;
 
+     /*
+      * for VoLte Default Bearer used
+      */
+    DefaultBearerConfig mDefaultBearerConfig;
+
+    /**
+      * To decrease the time of unused apn type.
+      */
+    private boolean mNeedNotify;
+
+    /**
+    * The connection type of APN.
+    */
+    private final int mNetType;
+
     public ApnContext(Context context, String apnType, String logTag, NetworkConfig config,
             DcTrackerBase tracker) {
         mContext = context;
@@ -100,6 +127,13 @@ public class ApnContext {
         priority = config.priority;
         LOG_TAG = logTag;
         mDcTracker = tracker;
+        
+        // VoLTE
+        mDefaultBearerConfig = new DefaultBearerConfig();
+        mNeedNotify = needNotifyType(apnType);
+
+        // M: ePDG
+        mNetType = config.type;
     }
 
     public String getApnType() {
@@ -242,6 +276,7 @@ public class ApnContext {
             log("set enabled as " + enabled + ", current state is " + mDataEnabled.get());
         }
         mDataEnabled.set(enabled);
+        mNeedNotify = true;
     }
 
     public boolean isEnabled() {
@@ -263,6 +298,10 @@ public class ApnContext {
         String provisioningApn = mContext.getResources()
                 .getString(R.string.mobile_provisioning_apn);
         if ((mApnSetting != null) && (mApnSetting.apn != null)) {
+            if (provisioningApn.equals("")) {
+                log("provisioningApn is empty");
+                return false;
+            }
             return (mApnSetting.apn.equals(provisioningApn));
         } else {
             return false;
@@ -285,6 +324,45 @@ public class ApnContext {
         }
     }
 
+    //VoLTE [start]
+    public DefaultBearerConfig getDefaultBearerConfig() {
+        return mDefaultBearerConfig;
+    }
+
+    public void setDefaultBearerConfig(DefaultBearerConfig defaultBearerConfig) {
+        mDefaultBearerConfig.copyFrom(defaultBearerConfig);
+    }
+
+    public boolean isDefaultBearerConfigValid() {
+        return (0 == mDefaultBearerConfig.mIsValid) ? false : true;
+    }
+
+    public void resetDefaultBearerConfig() {
+        mDefaultBearerConfig.reset();
+    }
+    //VoLTE [end]
+
+    //MTK Start: Check need notify or not
+    private boolean needNotifyType(String apnTypes) {
+        if (apnTypes.equals(PhoneConstants.APN_TYPE_DM)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_WAP)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_NET)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_CMMAIL)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_TETHERING)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_RCSE)) {
+            return false;
+        }
+        return true;
+    }
+
+    public boolean isNeedNotify() {
+        if (DBG) {
+            log("Current apn tpye:" + mApnType + " isNeedNotify" + mNeedNotify);
+        }
+        return mNeedNotify;
+    }
+    //MTK End: Check need notify or not
+
     @Override
     public synchronized String toString() {
         // We don't print mDataConnection because its recursive.
@@ -301,4 +379,20 @@ public class ApnContext {
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         pw.println("ApnContext: " + this.toString());
     }
+
+    public boolean isHandover() {
+        ConnectivityManager cm = (ConnectivityManager) mContext.getSystemService(
+                Context.CONNECTIVITY_SERVICE);
+        NetworkInfo nwInfo = cm.getNetworkInfo(mNetType);
+        log("Check handover with type:" + mNetType);
+        if (nwInfo != null && nwInfo.isConnected()) {
+            if (DBG) {
+                log(mApnType + ":" + mNetType + ":" + nwInfo);
+            }
+            return true;
+        }
+        return false;
+    }
+    //@}
+
 }

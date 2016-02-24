@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,7 +64,34 @@ class GsmCall extends Call {
     @Override
     public boolean
     isMultiparty() {
-        return mConnections.size() > 1;
+        /// M: CC014: Remove DISCONNECTED & DIALING conn from counting isMultiparty @{
+        int DiscConn = 0;
+        boolean isMptyCall = false;
+
+        for (int j = mConnections.size() - 1 ; j >= 0 ; j--) {
+            GsmConnection cn = (GsmConnection) (mConnections.get(j));
+
+            if (cn.getState() == GsmCall.State.DISCONNECTED) {
+                DiscConn++;
+            }
+        }
+
+        if (mConnections.size() <= 1) {
+            isMptyCall = false;
+        } else if (mConnections.size() > 1) {
+            if ((mConnections.size() - DiscConn) <= 1) {
+                isMptyCall = false;
+            } else if (getState() == GsmCall.State.DIALING) {
+                isMptyCall = false;
+            } else {
+                isMptyCall = true;
+            }
+        } else {
+            isMptyCall = false;
+        }
+
+        return isMptyCall;
+        /// @}
     }
 
     /** Please note: if this is the foreground call and a
@@ -71,6 +103,18 @@ class GsmCall extends Call {
     hangup() throws CallStateException {
         mOwner.hangup(this);
     }
+
+    /// M: CC040: Reject call with cause for HFP @{
+    /** Please note: if this is the foreground call and a
+     *  background call exists, the background call will be resumed
+     *  because an AT+CHLD=1 will be sent
+     *  Add this API by mtk01411 [ALPS00475147]
+     */
+    public void
+    hangup(int discRingingCallCause) throws CallStateException {
+        mOwner.hangup(this, discRingingCallCause);
+    }
+    /// @}
 
     @Override
     public String
@@ -172,7 +216,10 @@ class GsmCall extends Call {
 
             cn.onHangupLocal();
         }
-        mState = State.DISCONNECTING;
+
+        if ((mConnections.size() != 0) && getState().isAlive()) {
+           mState = State.DISCONNECTING;
+        }
     }
 
     /**

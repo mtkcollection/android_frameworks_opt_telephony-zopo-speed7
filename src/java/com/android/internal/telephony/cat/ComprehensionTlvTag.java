@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,13 +45,30 @@ public enum ComprehensionTlvTag {
     HELP_REQUEST(0x15),
     DEFAULT_TEXT(0x17),
     EVENT_LIST(0x19),
+    CAUSE(0x1a),
+    TRANSACTION_ID(0x1c),
     ICON_ID(0x1e),
     ITEM_ICON_ID_LIST(0x1f),
     IMMEDIATE_RESPONSE(0x2b),
     LANGUAGE(0x2d),
     URL(0x31),
     BROWSER_TERMINATION_CAUSE(0x34),
-    TEXT_ATTRIBUTE(0x50);
+    // Add by Huibin Mao MTK80229
+    // ICS Migration start
+    // data object for class "e"
+    BEARER_DESCRIPTION(0x35),
+    CHANNEL_DATA(0x36),
+    CHANNEL_DATA_LENGTH(0x37),
+    CHANNEL_STATUS(0x38),
+    BUFFER_SIZE(0x39),
+    SIM_ME_INTERFACE_TRANSPORT_LEVEL(0x3C),
+    OTHER_ADDRESS(0x3E),
+    NETWORK_ACCESS_NAME(0x47),
+    NEXT_ACTION_INDICATOR(0x18),
+    DATE_TIME_AND_TIMEZONE(0x26),
+    // ICS Migration end
+    TEXT_ATTRIBUTE(0x50),
+    ACTIVATE_DESCRIPTOR(0x7B);
 
     private int mValue;
 

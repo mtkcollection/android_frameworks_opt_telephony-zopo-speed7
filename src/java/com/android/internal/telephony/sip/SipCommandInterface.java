@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -71,6 +76,11 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     public void changeBarringPassword(String facility, String oldPwd,
             String newPwd, Message result) {
     }
+    /* M: SS part */
+    public void changeBarringPassword(String facility, String oldPwd, String newPwd,
+        String newCfm , Message result) {
+    }
+    /* M: SS part end */
 
     @Override
     public void supplyNetworkDepersonalization(String netpin, Message result) {
@@ -256,12 +266,6 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     }
 
     @Override
-    public void setupDataCall(String radioTechnology, String profile,
-            String apn, String user, String password, String authType,
-            String protocol, Message result) {
-    }
-
-    @Override
     public void deactivateDataCall(int cid, int reason, Message result) {
     }
 
@@ -304,6 +308,19 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     @Override
     public void setCLIR(int clirMode, Message result) {
     }
+    /* M: SS part */
+    public void setCLIP(boolean enable, Message result) {
+    }
+
+    public void getCOLR(Message response) {
+    }
+
+    public void setCOLP(boolean enable, Message response) {
+    }
+
+    public void getCOLP(Message response) {
+    }
+    /* M: SS part end */
 
     @Override
     public void queryCallWaiting(int serviceClass, Message response) {
@@ -390,11 +407,15 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     }
 
     @Override
-    public void setBandMode (int bandMode, Message response) {
+    public void setBandMode(int bandMode, Message response) {
     }
 
     @Override
-    public void queryAvailableBandMode (Message response) {
+    public void setBandMode(int[] bandMode, Message response) {
+    }
+
+    @Override
+    public void queryAvailableBandMode(Message response) {
     }
 
     @Override
@@ -411,7 +432,7 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
 
     @Override
     public void handleCallSetupRequestFromSim(
-            boolean accept, Message response) {
+            boolean accept, int resCode, Message response) {
     }
 
     @Override
@@ -566,6 +587,11 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     }
 
     @Override
+    public void setInitialAttachApn(String apn, String protocol, int authType, String username,
+            String password, String operatorNumeric, boolean canHandleIms, Message result) {
+    }
+
+    @Override
     public void setDataProfile(DataProfile[] dps, Message result) {
     }
 
@@ -610,4 +636,83 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     @Override
     public void requestShutdown(Message result) {
     }
+
+    // Added by M begin
+    @Override
+    public void iccGetATR(Message response) {
+    }
+
+    @Override
+    public void iccOpenChannelWithSw(String AID, Message result){
+    }
+    // Added by M end
+
+    @Override
+    public void setTrm(int mode, Message result) {
+    }
+
+    @Override
+    public void setOnPlmnChangeNotification(Handler h, int what, Object obj) {
+    }
+
+    @Override
+    public void unSetOnPlmnChangeNotification(Handler h) {
+    }
+
+    @Override
+    public void setOnRegistrationSuspended(Handler h, int what, Object obj) {
+    }
+
+    @Override
+    public void unSetOnRegistrationSuspended(Handler h) {
+    }
+
+    @Override
+    public void setResumeRegistration(int sessionId, Message response) {
+    }
+
+    @Override
+    public void queryModemType(Message response) {
+    }
+
+    @Override
+    public void storeModemType(int modemType, Message response) {
+    }
+
+    @Override
+    public void reloadModemType(int modemType, Message response) {
+    }
+
+    // M: Fast Dormancy
+    public void setScri(boolean forceRelease, Message response) {
+    }
+
+    public void setFDMode(int mode, int parameter1, int parameter2, Message response) {
+    }
+
+    //UTK start
+    public void getUtkLocalInfo(Message response) {
+    }
+
+    public void requestUtkRefresh(int type, Message response) {
+    }
+
+    public void reportUtkServiceIsRunning(Message result) {
+    }
+
+    public void profileDownload(String profile, Message response) {
+    }
+
+    public void handleCallSetupRequestFromUim(boolean accept, Message response) {
+    }
+
+    public void queryUtkSetupMenuFromMD(String contents, Message response) {
+    }
+
+    public void setStkSwitchMode(int mode) {
+    }
+    
+    public void setBipPsType(int type) {
+    }
+    //UTK end
 }

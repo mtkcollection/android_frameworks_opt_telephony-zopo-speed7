@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,9 +27,10 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.Registrant;
 import android.os.RegistrantList;
-
 import android.telephony.TelephonyManager;
+
 import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 
 import java.io.FileDescriptor;
@@ -100,6 +106,18 @@ public abstract class IccRecords extends Handler implements IccConstants {
     public static final int EVENT_GET_ICC_RECORD_DONE = 100;
     protected static final int EVENT_APP_READY = 1;
     private static final int EVENT_AKA_AUTHENTICATE_DONE          = 90;
+
+    // MTK-START
+    /* Refine ICCID record updating by SYS PRO, 2015/03/23 {*/
+    protected static final int EVENT_GET_ICCID = 101;
+    protected static final String[] ICCRECORD_PROPERTY_ICCID = {
+        "ril.iccid.sim1",
+        "ril.iccid.sim2",
+        "ril.iccid.sim3",
+        "ril.iccid.sim4",
+    };
+    /* Refine ICCID record updating by SYS PRO, 2015/03/23 }*/
+    // MTK-END
 
     @Override
     public String toString() {
@@ -353,6 +371,7 @@ public abstract class IccRecords extends Handler implements IccConstants {
     }
 
     protected void setServiceProviderName(String spn) {
+        log("setServiceProviderName: spn=" + spn);
         mSpn = spn;
     }
 
@@ -575,6 +594,14 @@ public abstract class IccRecords extends Handler implements IccConstants {
         log("[key, value]=" + key + ", " +  val);
     }
 
+    /*
+      Detail description:
+      This feature provides a interface to get menu title string from EF_SUME
+    */
+    public String getMenuTitleFromEf() {
+        return null;
+    }
+
     /**
      * Returns the response of the SIM application on the UICC to authentication
      * challenge/response algorithm. The data string and challenge response are
@@ -669,4 +696,88 @@ public abstract class IccRecords extends Handler implements IccConstants {
         pw.println(" mSpn=" + mSpn);
         pw.flush();
     }
+
+    // Added by M begin
+    public static final int EVENT_MSISDN = 100; // MSISDN update
+
+    protected String mOldMccMnc = "";
+    // AT&T RAT balancing
+    public static final int EF_RAT_UNDEFINED = 0xFFFFFF00;
+    public static final int EF_RAT_NOT_EXIST_IN_USIM = 0x00000100;
+    public static final int EF_RAT_FOR_OTHER_CASE = 0x00000200;
+
+    // ALPS00302702 RAT balancing
+    public int getEfRatBalancing() {
+        return EF_RAT_UNDEFINED;
+    }
+
+    // MVNO-API START
+    public String getSpNameInEfSpn() {
+        return null;
+    }
+
+    public String isOperatorMvnoForImsi() {
+        return null;
+    }
+
+    public String getFirstFullNameInEfPnn() {
+        return null;
+    }
+
+    public String isOperatorMvnoForEfPnn() {
+        return null;
+    }
+
+    public String getMvnoMatchType() {
+        return null;
+    }
+    // MVNO-API END
+
+    public String getSIMCPHSOns() {
+        return null;
+    }
+
+    public String getEfGbabp() {
+        return null;
+    }
+
+    public void setEfGbabp(String gbabp, Message onComplete) {}
+
+    public byte[] getEfPsismsc() {
+        return null;
+    }
+
+    public byte[] getEfSmsp() {
+        return null;
+    }
+
+    public int getMncLength() {
+        return 0;
+    }
+
+    /**
+     * Check if the service status by indicated service.
+     *
+     * @param enService service defined in Phone.IccService
+     * @return service state
+     */
+    public Phone.IccServiceStatus getSIMServiceStatus(Phone.IccService enService) {
+        return Phone.IccServiceStatus.NOT_EXIST_IN_USIM;
+    }
+
+    public boolean isRadioAvailable() {
+          return false;
+    }
+
+    // MTK-START
+    protected void getIccIdRecord() {
+        sendMessage(obtainMessage(EVENT_GET_ICCID));
+    }
+    
+    public boolean isPhbReady() {
+        return false;
+    }
+    // MTK-END
+
+    // Added by M end
 }

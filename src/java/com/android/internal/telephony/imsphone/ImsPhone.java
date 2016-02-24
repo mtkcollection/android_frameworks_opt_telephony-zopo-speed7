@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,6 +25,7 @@ import android.app.ActivityManagerNative;
 import android.content.Context;
 import android.content.Intent;
 import android.os.AsyncResult;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.os.PowerManager;
@@ -36,6 +42,8 @@ import android.telephony.SubscriptionManager;
 import android.text.TextUtils;
 
 import com.android.ims.ImsCallForwardInfo;
+/// M: SS OP01 Ut
+import com.android.ims.ImsCallForwardInfoEx;
 import com.android.ims.ImsCallProfile;
 import com.android.ims.ImsEcbm;
 import com.android.ims.ImsEcbmStateListener;
@@ -65,9 +73,12 @@ import static com.android.internal.telephony.CommandsInterface.CF_REASON_BUSY;
 import static com.android.internal.telephony.CommandsInterface.CF_REASON_UNCONDITIONAL;
 import static com.android.internal.telephony.CommandsInterface.SERVICE_CLASS_VOICE;
 import static com.android.internal.telephony.CommandsInterface.SERVICE_CLASS_NONE;
+import static com.android.internal.telephony.CommandsInterface.SERVICE_CLASS_VIDEO;
 
 import com.android.internal.telephony.Call;
 import com.android.internal.telephony.CallForwardInfo;
+/// M: SS OP01 Ut
+import com.android.internal.telephony.CallForwardInfoEx;
 import com.android.internal.telephony.CallStateException;
 import com.android.internal.telephony.CallTracker;
 import com.android.internal.telephony.CommandException;
@@ -77,12 +88,16 @@ import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.PhoneNotifier;
+import com.android.internal.telephony.SuppSrvRequest;
 import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.TelephonyProperties;
 import com.android.internal.telephony.cdma.CDMAPhone;
 import com.android.internal.telephony.gsm.GSMPhone;
 import com.android.internal.telephony.uicc.IccRecords;
 
+/// M: ALPS01953873. @{
+import java.util.Arrays;
+/// @}
 import java.util.ArrayList;
 import java.util.List;
 
@@ -98,8 +113,19 @@ public class ImsPhone extends ImsPhoneBase {
     protected static final int EVENT_GET_CALL_BARRING_DONE          = EVENT_LAST + 2;
     protected static final int EVENT_SET_CALL_WAITING_DONE          = EVENT_LAST + 3;
     protected static final int EVENT_GET_CALL_WAITING_DONE          = EVENT_LAST + 4;
+    protected static final int EVENT_SET_CLIR_DONE                  = EVENT_LAST + 5;
+    protected static final int EVENT_GET_CLIR_DONE                  = EVENT_LAST + 6;
 
     public static final String CS_FALLBACK = "cs_fallback";
+    public static final String UT_BUNDLE_KEY_CLIR = "queryClir";
+
+    /// M: @{
+    /**
+     * Used as the message in CallStateException.
+     * We don't support dialing a USSD number while there is an existing IMS call.
+     */
+    public static final String USSD_DURING_IMS_INCALL = "ussd_during_ims_incall";
+    /// @}
 
     static final int RESTART_ECM_TIMER = 0; // restart Ecm timer
     static final int CANCEL_ECM_TIMER = 1; // cancel Ecm timer
@@ -128,6 +154,9 @@ public class ImsPhone extends ImsPhoneBase {
     private final RegistrantList mSilentRedialRegistrants = new RegistrantList();
 
     private boolean mImsRegistered = false;
+
+    private String mDialString;
+
     // A runnable which is used to automatically exit from Ecm after a period of time.
     private Runnable mExitEcmRunnable = new Runnable() {
         @Override
@@ -182,17 +211,13 @@ public class ImsPhone extends ImsPhoneBase {
     @Override
     public void dispose() {
         Rlog.d(LOG_TAG, "dispose");
+
         // Nothing to dispose in PhoneBase
         //super.dispose();
         mPendingMMIs.clear();
         mCT.dispose();
 
         //Force all referenced classes to unregister their former registered events
-    }
-
-    @Override
-    public Phone getImsPhone() {
-        return null;
     }
 
     @Override
@@ -454,6 +479,16 @@ public class ImsPhone extends ImsPhoneBase {
         return result;
     }
 
+    /// M: for USSD over IMS workaround. @{
+    private boolean isUssdDuringInCall(ImsPhoneMmiCode mmi) {
+        if (mmi == null || !mmi.isUssdNumber()) {
+            return false;
+        }
+
+        return isInCall();
+    }
+    /// @}
+
     boolean isInCall() {
         ImsPhoneCall.State foregroundCallState = getForegroundCall().getState();
         ImsPhoneCall.State backgroundCallState = getBackgroundCall().getState();
@@ -496,11 +531,24 @@ public class ImsPhone extends ImsPhoneBase {
         if (DBG) Rlog.d(LOG_TAG,
                 "dialing w/ mmi '" + mmi + "'...");
 
+        /// M: If there is an existing call, CS_FB will cause call end. So just ignore it. @{
+        if (isUssdDuringInCall(mmi)) {
+            if (DBG) {
+                Rlog.d(LOG_TAG, "USSD during in-call, ignore this operation!");
+            }
+            throw new CallStateException(USSD_DURING_IMS_INCALL);
+        }
+        /// @}
+
+        mDialString = dialString;
         if (mmi == null) {
             return mCT.dial(dialString, videoState);
         } else if (mmi.isTemporaryModeCLIR()) {
             return mCT.dial(mmi.getDialingNumber(), mmi.getCLIRMode(), videoState);
         } else if (!mmi.isSupportedOverImsPhone()) {
+            if (DBG) {
+                Rlog.d(LOG_TAG, "MMI not supported over ImsPhone()");
+            }
             // If the mmi is not supported by IMS service,
             // try to initiate dialing with default phone
             throw new CallStateException(CS_FALLBACK);
@@ -690,7 +738,7 @@ public class ImsPhone extends ImsPhoneBase {
                         getConditionFromCFReason(commandInterfaceCFReason),
                         dialingNumber,
                         timerSeconds,
-                        onComplete);
+                        resp);
              } catch (ImsException e) {
                 sendErrorResponse(onComplete, e);
              }
@@ -749,8 +797,12 @@ public class ImsPhone extends ImsPhoneBase {
         return 0;
     }
 
-    /* package */
-    void getCallBarring(String facility, Message onComplete) {
+    /**
+     * Get Call Barring State.
+     * @param facility the call barring method
+     * @param onComplete message callback
+     */
+    /* package */ public void getCallBarring(String facility, Message onComplete) {
         if (DBG) Rlog.d(LOG_TAG, "getCallBarring facility=" + facility);
         Message resp;
         resp = obtainMessage(EVENT_GET_CALL_BARRING_DONE, onComplete);
@@ -763,8 +815,15 @@ public class ImsPhone extends ImsPhoneBase {
         }
     }
 
-    /* package */
-    void setCallBarring(String facility, boolean lockState, String password, Message onComplete) {
+    /**
+     * Set Call Barring State.
+     * @param facility the call barring method
+     * @param lockState activation flag
+     * @param password password
+     * @param onComplete message callback
+     */
+    /* package */ public void setCallBarring(String facility, boolean lockState, String password,
+            Message onComplete) {
         if (DBG) Rlog.d(LOG_TAG, "setCallBarring facility=" + facility
                 + ", lockState=" + lockState);
         Message resp;
@@ -837,6 +896,12 @@ public class ImsPhone extends ImsPhoneBase {
                 break;
             case ImsReasonInfo.CODE_UT_CB_PASSWORD_MISMATCH:
                 error = CommandException.Error.PASSWORD_INCORRECT;
+                break;
+            case ImsReasonInfo.CODE_UT_XCAP_403_FORBIDDEN:
+                error = CommandException.Error.UT_XCAP_403_FORBIDDEN;
+                break;
+            case ImsReasonInfo.CODE_UT_UNKNOWN_HOST:
+                error = CommandException.Error.UT_UNKNOWN_HOST;
                 break;
             default:
                 break;
@@ -1019,11 +1084,7 @@ public class ImsPhone extends ImsPhoneBase {
 
     private int[] handleCbQueryResult(ImsSsInfo[] infos) {
         int[] cbInfos = new int[1];
-        cbInfos[0] = SERVICE_CLASS_NONE;
-
-        if (infos[0].mStatus == 1) {
-            cbInfos[0] = SERVICE_CLASS_VOICE;
-        }
+        cbInfos[0] = infos[0].mStatus;
 
         return cbInfos;
     }
@@ -1101,6 +1162,80 @@ public class ImsPhone extends ImsPhoneBase {
              case EVENT_SET_CALL_WAITING_DONE:
                 sendResponse((Message) ar.userObj, null, ar.exception);
                 break;
+
+             case EVENT_SET_CLIR_DONE:
+                 if (ar.exception == null) {
+                     if (mDefaultPhone instanceof GSMPhone) {
+                         GSMPhone gsmPhone = (GSMPhone) mDefaultPhone;
+                         gsmPhone.saveClirSetting(msg.arg1);
+                     }
+                 }
+                 sendResponse((Message) ar.userObj, ar.result, ar.exception);
+                 break;
+
+             case EVENT_GET_CLIR_DONE:
+                 int[] clirInfo = null;
+                 if (ar.exception == null) {
+                     Bundle ssInfo = (Bundle) ar.result;
+                     clirInfo = ssInfo.getIntArray(UT_BUNDLE_KEY_CLIR);
+                     // clirInfo[0] = The 'n' parameter from TS 27.007 7.7
+                     // clirInfo[1] = The 'm' parameter from TS 27.007 7.7
+                     Rlog.d(LOG_TAG, "EVENT_GET_CLIR_DONE: CLIR param n=" + clirInfo[0]
+                             + " m=" + clirInfo[1]);
+                 }
+                 sendResponse((Message) ar.userObj, clirInfo, ar.exception);
+                 break;
+
+             /// M: SS OP01 Ut @{
+             case EVENT_GET_CALL_FORWARD_TIME_SLOT_DONE:
+                 CallForwardInfoEx[] cfInfosEx = null;
+                 if (ar.exception == null) {
+                     cfInfosEx = handleCfInTimeSlotQueryResult(
+                            (ImsCallForwardInfoEx[]) ar.result);
+                 }
+
+                 if ((ar.exception != null) && (ar.exception instanceof ImsException)) {
+                     ImsException imsException = (ImsException) ar.exception;
+                     if ((imsException != null) && (imsException.getCode() ==
+                            ImsReasonInfo.CODE_UT_XCAP_403_FORBIDDEN)) {
+                         mDefaultPhone.setCsFallbackStatus(PhoneConstants.UT_CSFB_UNTIL_NEXT_BOOT);
+                         Message resp = (Message) ar.userObj;
+                         if (resp != null) {
+                            AsyncResult.forMessage(resp, cfInfosEx, new CommandException(
+                                    CommandException.Error.SPECAIL_UT_COMMAND_NOT_SUPPORTED));
+                            resp.sendToTarget();
+                            return;
+                        }
+                     }
+                 }
+                 sendResponse((Message) ar.userObj, cfInfosEx, ar.exception);
+                 break;
+
+             case EVENT_SET_CALL_FORWARD_TIME_SLOT_DONE:
+                 IccRecords records = getIccRecords();
+                 CfEx cfEx = (CfEx) ar.userObj;
+                 if (cfEx.mIsCfu && ar.exception == null && records != null) {
+                     records.setVoiceCallForwardingFlag(1, msg.arg1 == 1, cfEx.mSetCfNumber);
+                     saveTimeSlot(cfEx.mSetTimeSlot);
+                 }
+
+                 if ((ar.exception != null) && (ar.exception instanceof ImsException)) {
+                     ImsException imsException = (ImsException) ar.exception;
+                     if ((imsException != null) && (imsException.getCode() ==
+                            ImsReasonInfo.CODE_UT_XCAP_403_FORBIDDEN)) {
+                         mDefaultPhone.setCsFallbackStatus(PhoneConstants.UT_CSFB_UNTIL_NEXT_BOOT);
+                         Message resp = cfEx.mOnComplete;
+                         if (resp != null) {
+                            AsyncResult.forMessage(resp, null, new CommandException(
+                                    CommandException.Error.SPECAIL_UT_COMMAND_NOT_SUPPORTED));
+                            resp.sendToTarget();
+                            return;
+                        }
+                     }
+                 }
+                 sendResponse(cfEx.mOnComplete, null, ar.exception);
+                 break;
+             /// @}
 
              default:
                  super.handleMessage(msg);
@@ -1262,4 +1397,241 @@ public class ImsPhone extends ImsPhoneBase {
     public void callEndCleanupHandOverCallIfAny() {
         mCT.callEndCleanupHandOverCallIfAny();
     }
+
+    @Override
+    public void getOutgoingCallerIdDisplay(Message onComplete) {
+        if (DBG) {
+            Rlog.d(LOG_TAG, "getOutgoingCallerIdDisplay");
+        }
+        Message resp;
+        resp = obtainMessage(EVENT_GET_CLIR_DONE, onComplete);
+
+        try {
+            ImsUtInterface ut = mCT.getUtInterface();
+            ut.queryCLIR(resp);
+        } catch (ImsException e) {
+            sendErrorResponse(onComplete, e);
+        }
+    }
+
+    @Override
+    public void setOutgoingCallerIdDisplay(int commandInterfaceCLIRMode,
+            Message onComplete) {
+        if (DBG) {
+            Rlog.d(LOG_TAG, "setOutgoingCallerIdDisplay: commandInterfaceCLIRMode="
+                    + commandInterfaceCLIRMode);
+        }
+        Message resp;
+        resp = obtainMessage(EVENT_SET_CLIR_DONE, commandInterfaceCLIRMode, 0, onComplete);
+
+        try {
+            ImsUtInterface ut = mCT.getUtInterface();
+            ut.updateCLIR(commandInterfaceCLIRMode, resp);
+        } catch (ImsException e) {
+            sendErrorResponse(onComplete, e);
+        }
+    }
+
+    /**
+     * CS Fall back to GSMPhone for MMI code.
+     *
+     *@param reason the reason for CS fallback
+     */
+    public void handleMmiCodeCsfb(int reason) {
+        if (DBG) {
+            Rlog.d(LOG_TAG, "handleMmiCodeCsfb: reason = " + reason + ", mDialString = "
+                    + mDialString);
+        }
+        if (reason == ImsReasonInfo.CODE_UT_XCAP_403_FORBIDDEN) {
+            mDefaultPhone.setCsFallbackStatus(PhoneConstants.UT_CSFB_UNTIL_NEXT_BOOT);
+        } else if (reason == ImsReasonInfo.CODE_UT_UNKNOWN_HOST) {
+            mDefaultPhone.setCsFallbackStatus(PhoneConstants.UT_CSFB_ONCE);
+        }
+        SuppSrvRequest ss = SuppSrvRequest.obtain(SuppSrvRequest.SUPP_SRV_REQ_MMI_CODE, null);
+        ss.mParcel.writeString(mDialString);
+        Message msgCSFB = mDefaultPhone.obtainMessage(EVENT_IMS_UT_CSFB, ss);
+
+        mDefaultPhone.sendMessage(msgCSFB);
+    }
+
+    /// M: SS OP01 Ut @{
+    private static class CfEx {
+        final String mSetCfNumber;
+        final long[] mSetTimeSlot;
+        final Message mOnComplete;
+        final boolean mIsCfu;
+
+        CfEx(String cfNumber, long[] cfTimeSlot, boolean isCfu, Message onComplete) {
+            mSetCfNumber = cfNumber;
+            mSetTimeSlot = cfTimeSlot;
+            mIsCfu = isCfu;
+            mOnComplete = onComplete;
+        }
+    }
+
+    @Override
+    public void getCallForwardInTimeSlot(int commandInterfaceCFReason,
+            Message onComplete) {
+        if (DBG) {
+            Rlog.d(LOG_TAG, "getCallForwardInTimeSlot reason = " + commandInterfaceCFReason);
+        }
+        if (commandInterfaceCFReason == CF_REASON_UNCONDITIONAL) {
+            if (DBG) {
+                Rlog.d(LOG_TAG, "requesting call forwarding in a time slot query.");
+            }
+            Message resp;
+            resp = obtainMessage(EVENT_GET_CALL_FORWARD_TIME_SLOT_DONE, onComplete);
+
+            try {
+                ImsUtInterface ut = mCT.getUtInterface();
+                ut.queryCallForwardInTimeSlot(
+                        getConditionFromCFReason(commandInterfaceCFReason),
+                        resp);
+            } catch (ImsException e) {
+                sendErrorResponse(onComplete, e);
+            }
+        } else if (onComplete != null) {
+            sendErrorResponse(onComplete);
+        }
+    }
+
+    @Override
+    public void setCallForwardInTimeSlot(int commandInterfaceCFAction,
+            int commandInterfaceCFReason,
+            String dialingNumber,
+            int timerSeconds,
+            long[] timeSlot,
+            Message onComplete) {
+        if (DBG) {
+            Rlog.d(LOG_TAG, "setCallForwardInTimeSlot action = " + commandInterfaceCFAction
+                    + ", reason = " + commandInterfaceCFReason);
+        }
+        if ((isValidCommandInterfaceCFAction(commandInterfaceCFAction)) &&
+                (commandInterfaceCFReason == CF_REASON_UNCONDITIONAL)) {
+            Message resp;
+            CfEx cfEx = new CfEx(dialingNumber, timeSlot,
+                    (commandInterfaceCFReason == CF_REASON_UNCONDITIONAL ? true : false),
+                    onComplete);
+            resp = obtainMessage(EVENT_SET_CALL_FORWARD_TIME_SLOT_DONE,
+                    isCfEnable(commandInterfaceCFAction) ? 1 : 0, 0, cfEx);
+
+            try {
+                ImsUtInterface ut = mCT.getUtInterface();
+                ut.updateCallForwardInTimeSlot(getActionFromCFAction(commandInterfaceCFAction),
+                        getConditionFromCFReason(commandInterfaceCFReason),
+                        dialingNumber,
+                        timerSeconds,
+                        timeSlot,
+                        resp);
+             } catch (ImsException e) {
+                sendErrorResponse(onComplete, e);
+             }
+        } else if (onComplete != null) {
+            sendErrorResponse(onComplete);
+        }
+    }
+
+    private CallForwardInfoEx[] handleCfInTimeSlotQueryResult(ImsCallForwardInfoEx[] infos) {
+        CallForwardInfoEx[] cfInfos = null;
+
+        if (infos != null && infos.length != 0) {
+            cfInfos = new CallForwardInfoEx[infos.length];
+        }
+
+        IccRecords r = getIccRecords();
+        if (infos == null || infos.length == 0) {
+            if (r != null) {
+                // Assume the default is not active
+                // Set unconditional CFF in SIM to false
+                r.setVoiceCallForwardingFlag(1, false, null);
+            }
+        } else {
+            for (int i = 0, s = infos.length; i < s; i++) {
+                if (infos[i].mCondition == ImsUtInterface.CDIV_CF_UNCONDITIONAL) {
+                    if (r != null) {
+                        r.setVoiceCallForwardingFlag(1, (infos[i].mStatus == 1),
+                                infos[i].mNumber);
+                        saveTimeSlot(infos[i].mTimeSlot);
+                    }
+                }
+                cfInfos[i] = getCallForwardInfoEx(infos[i]);
+            }
+        }
+
+        return cfInfos;
+    }
+
+    private CallForwardInfoEx getCallForwardInfoEx(ImsCallForwardInfoEx info) {
+        CallForwardInfoEx cfInfo = new CallForwardInfoEx();
+        cfInfo.status = info.mStatus;
+        cfInfo.reason = getCFReasonFromCondition(info.mCondition);
+        cfInfo.serviceClass = info.mServiceClass;
+        cfInfo.toa = info.mToA;
+        cfInfo.number = info.mNumber;
+        cfInfo.timeSeconds = info.mTimeSeconds;
+        cfInfo.timeSlot = info.mTimeSlot;
+        return cfInfo;
+    }
+
+    @Override
+    public void hangupAll() throws CallStateException {
+        if (DBG) {
+            Rlog.d(LOG_TAG, "hangupAll");
+        }
+        mCT.hangupAll();
+    }
+    /// @}
+
+    /// M: Add the new API to get the CommandsInterface @{
+    //@Override
+    public CommandsInterface getCommandsInterface() {
+        return mDefaultPhone.mCi;
+    }
+    /// @}
+
+    /// M: For VoLTE enhanced conference call. @{
+    @Override
+    public Connection dial(List<String> numbers, int videoState)
+            throws CallStateException {
+        return mCT.dial(numbers, videoState);
+    }
+    /// @}
+
+    /// M: ALPS01953873. @{
+    /**
+     * Query if currently this phone support the specific feature.
+     * @param feature defineded in Phone.java
+     * @return true if supporting.
+     * @hide
+     */
+    @Override
+    public boolean isFeatureSupported(FeatureType feature) {
+        if (feature == FeatureType.VOLTE_ENHANCED_CONFERENCE) {
+            final List<String> voLteEnhancedConfMccMncList
+                = Arrays.asList(
+                    // 1. CMCC:
+                    "46000", "46002", "46007", "46008", "46011");
+
+            IccRecords iccRecords = getIccRecords();
+            if (iccRecords != null) {
+                String mccMnc = iccRecords.getOperatorNumeric();
+                boolean ret = voLteEnhancedConfMccMncList.contains(mccMnc);
+
+                Rlog.d(LOG_TAG,
+                    "isFeatureSupported(VOLTE_ENHANCED_CONFERENCE): ret = " + ret +
+                    " current mccMnc = " + mccMnc);
+                return ret;
+            } else {
+                Rlog.d(LOG_TAG,
+                    "isFeatureSupported(VOLTE_ENHANCED_CONFERENCE) no iccRecords");
+            }
+        } else if (feature == FeatureType.VOLTE_CONF_REMOVE_MEMBER) {
+            // Currently, there is still no specifically operator support remove member.
+            // Wait explicit signal to extend the supporting list.
+            return false;
+        }
+
+        return false;
+    }
+    /// @}
 }

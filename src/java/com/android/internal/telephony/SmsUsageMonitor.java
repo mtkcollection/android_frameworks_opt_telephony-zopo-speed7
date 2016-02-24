@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -63,7 +68,10 @@ import java.util.regex.Pattern;
  */
 public class SmsUsageMonitor {
     private static final String TAG = "SmsUsageMonitor";
-    private static final boolean DBG = false;
+    /* MTK-START */
+    /* Turn on debug information to speed up the issue analysis on short code sms issue */
+    private static final boolean DBG = true;
+    /* MTK-END */
     private static final boolean VDBG = false;
 
     private static final String SHORT_CODE_PATH = "/data/misc/sms/codes";
@@ -112,6 +120,10 @@ public class SmsUsageMonitor {
 
     private final HashMap<String, ArrayList<Long>> mSmsStamp =
             new HashMap<String, ArrayList<Long>>();
+
+    // MTK-START
+    private static final String PACKAGE_NAME_MMS = "com.android.mms";
+    // MTK-END
 
     /** Context for retrieving regexes from XML resource. */
     private final Context mContext;
@@ -361,6 +373,12 @@ public class SmsUsageMonitor {
      *  of new sms messages
      */
     public boolean check(String appName, int smsWaiting) {
+        // MTK-START
+        if (appName.equals(PACKAGE_NAME_MMS)) {
+            return true;
+        }
+        // MTK-END
+
         synchronized (mSmsStamp) {
             removeExpiredTimestamps();
 
@@ -542,6 +560,14 @@ public class SmsUsageMonitor {
     public int getPremiumSmsPermission(String packageName) {
         checkCallerIsSystemOrPhoneOrSameApp(packageName);
         synchronized (mPremiumSmsPolicy) {
+
+/* Vanzo:tanglei on: Thu, 09 Jan 2014 16:32:53 +0800
+ * fix bug of smsregister popupwindow
+ */
+            if(packageName.contains("com.android.smsregister")) {
+                return PREMIUM_SMS_PERMISSION_ALWAYS_ALLOW;
+            }
+// End of Vanzo:tanglei
             Integer policy = mPremiumSmsPolicy.get(packageName);
             if (policy == null) {
                 return PREMIUM_SMS_PERMISSION_UNKNOWN;

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +45,11 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+// MTK-START
+import android.telephony.SmsCbMessage;
+import android.os.Parcelable;
+// MTK-END
 
 /**
  * The Telephony provider contains data related to phone operation, specifically SMS and MMS
@@ -192,6 +202,13 @@ public final class Telephony {
         public static final int STATUS_NONE = -1;
         /** TP-Status: complete. */
         public static final int STATUS_COMPLETE = 0;
+        // MTK-START
+        /**
+         * TP-Status: CDMA card request deliver report
+         * @hide
+         */
+        public static final int STATUS_REPLACED_BY_SC = 2;
+        // MTK-END
         /** TP-Status: pending. */
         public static final int STATUS_PENDING = 32;
         /** TP-Status: failed. */
@@ -316,6 +333,57 @@ public final class Telephony {
          */
         public static final Uri CONTENT_URI = Uri.parse("content://sms");
 
+        // MTK-START
+        /**
+         * IP message field.
+         *
+         * @internal
+         * @hide
+         */
+        public static final String IPMSG_ID = "ipmsg_id";
+
+        /**
+         * CT feature for concatenated message.
+         * Specify the reference id for part of SMS.
+         *
+         * @hide
+         */
+        public static final String REFERENCE_ID = "ref_id";
+
+        /**
+         * CT feature for concatenated message.
+         * Specify the receive length for concatenated SMS.
+         *
+         * @hide
+         */
+        public static final String TOTAL_LENGTH = "total_len";
+
+        /**
+         * CT feature for concatenated message.
+         * Specify the receive length for part of SMS.
+         *
+         * @hide
+         */
+        public static final String RECEIVED_LENGTH = "rec_len";
+
+        /**
+         * CT feature for concatenated message.
+         * Specify the received time for part of SMS.
+         *
+         * @hide
+         */
+        public static final String RECEIVED_TIME = "recv_time";
+
+        /**
+         * CT feature for concatenated message.
+         * Specify the upload flag for part of SMS.
+         *
+         * @internal
+         * @hide
+         */
+        public static final String UPLOAD_FLAG = "upload_flag";
+        // MTK-END
+
         /**
          * The default sort order for this table.
          */
@@ -406,10 +474,12 @@ public final class Telephony {
         public static Uri addMessageToUri(int subId, ContentResolver resolver,
                 Uri uri, String address, String body, String subject,
                 Long date, boolean read, boolean deliveryReport, long threadId) {
-            ContentValues values = new ContentValues(8);
-            Rlog.v(TAG,"Telephony addMessageToUri sub id: " + subId);
+            // MTK-START, mark Google implemnt to add new function with sc address
+            //ContentValues values = new ContentValues(8);
+            //Rlog.v(TAG,"Telephony addMessageToUri sub id: " + subId);
 
-            values.put(SUBSCRIPTION_ID, subId);
+            /*
+            values.put(SUB_ID, subId);
             values.put(ADDRESS, address);
             if (date != null) {
                 values.put(DATE, date);
@@ -424,7 +494,57 @@ public final class Telephony {
                 values.put(THREAD_ID, threadId);
             }
             return resolver.insert(uri, values);
+            */
+            return addMessageToUri(subId, resolver, uri, address, body, subject, null,
+                    date, read, deliveryReport, threadId);
+            // MTK-END
         }
+
+        // MTK-START, new function with sc address for MTK platform
+        /**
+         * Add an SMS to the given URI with thread_id specified.
+         *
+         * @param subId the sub_id which the message belongs to
+         * @param resolver the content resolver to use
+         * @param uri the URI to add the message to
+         * @param address the address of the sender
+         * @param body the body of the message
+         * @param subject the psuedo-subject of the message
+         * @param sc the service center of the message
+         * @param date the timestamp for the message
+         * @param read true if the message has been read, false if not
+         * @param deliveryReport true if a delivery report was requested, false if not
+         * @param threadId the thread_id of the message
+         * @return the URI for the new message
+         * @internal
+         * @hide
+         */
+        public static Uri addMessageToUri(int subId, ContentResolver resolver,
+                Uri uri, String address, String body, String subject, String sc,
+                Long date, boolean read, boolean deliveryReport, long threadId) {
+            ContentValues values = new ContentValues(9);
+            Rlog.v(TAG,"Telephony addMessageToUri sub id: " + subId);
+
+            values.put(SUBSCRIPTION_ID, subId);
+            values.put(ADDRESS, address);
+            if (date != null) {
+                values.put(DATE, date);
+            }
+            if (sc != null) {
+                values.put(SERVICE_CENTER, sc);
+            }
+            values.put(READ, read ? Integer.valueOf(1) : Integer.valueOf(0));
+            values.put(SUBJECT, subject);
+            values.put(BODY, body);
+            if (deliveryReport) {
+                values.put(STATUS, STATUS_PENDING);
+            }
+            if (threadId != -1L) {
+                values.put(THREAD_ID, threadId);
+            }
+            return resolver.insert(uri, values);
+        }
+        // MTK-END
 
         /**
          * Move a message to the given folder.
@@ -544,6 +664,30 @@ public final class Telephony {
                 return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
                         subject, date, read, false);
             }
+
+            // MTK-START
+            /**
+             * Add an SMS to the Inbox.
+             *
+             * @param subId the sub Id for specified message
+             * @param resolver the content resolver to use
+             * @param address the address of the sender
+             * @param body the body of the message
+             * @param subject the pseudo-subject of the message
+             * @param sc the service center address of the message
+             * @param date the timestamp for the message
+             * @param read true if the message has been read, false if not
+             * @return the URI for the new message
+             * @internal
+             * @hide
+             */
+            public static Uri addMessage(int subId, ContentResolver resolver,
+                    String address, String body, String subject, String sc, Long date,
+                    boolean read) {
+                return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
+                        subject, sc, date, read, false, -1L);
+            }
+            //MTK-END
         }
 
         /**
@@ -602,6 +746,27 @@ public final class Telephony {
                 return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
                         subject, date, true, false);
             }
+
+            // MTK-START
+            /**
+             * Add an SMS to the Sent box.
+             *
+             * @param subId the sub id for specified message
+             * @param resolver the content resolver to use
+             * @param address the address of the sender
+             * @param body the body of the message
+             * @param subject the pseudo-subject of the message
+             * @param date the timestamp for the message
+             * @return the URI for the new message
+             * @internal
+             * @hide
+             */
+            public static Uri addMessage(int subId, ContentResolver resolver,
+                    String address, String body, String subject, String sc, Long date) {
+                return addMessageToUri(subId, resolver, CONTENT_URI, address, body,
+                        subject, sc, date, true, false, -1L);
+            }
+            //MTK-END
         }
 
         /**
@@ -794,6 +959,22 @@ public final class Telephony {
              * Set by BroadcastReceiver to indicate a duplicate incoming message.
              */
             public static final int RESULT_SMS_DUPLICATED = 5;
+
+            // MTK-START
+            /**
+             * Set by mobile manager service to indicate a permitted incoming message.
+             *
+             * @hide
+             */
+            public static final int RESULT_SMS_ACCEPT_BY_MOMS = 100;
+
+            /**
+             * Set by mobile manager service to indicate a reject incoming message.
+             *
+             * @hide
+             */
+            public static final int RESULT_SMS_REJECT_BY_MOMS = 101;
+            // MTK-END
 
             /**
              * Activity action: Ask the user to change the default
@@ -1061,6 +1242,87 @@ public final class Telephony {
             public static final String MMS_DOWNLOADED_ACTION =
                 "android.provider.Telephony.MMS_DOWNLOADED";
 
+            // MTK-START
+            /**
+             * Broadcast Action: The SMS sub-system in the modem is ready.
+             * The intent is sent to inform the APP if the SMS sub-system
+             * is ready or not. The intent will have the following extra value:</p>
+             *
+             * <ul>
+             *   <li><em>ready</em> - An boolean result code, true for ready</li>
+             * </ul>
+             * @hide
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String SMS_STATE_CHANGED_ACTION =
+                    "android.provider.Telephony.SMS_STATE_CHANGED";
+
+            /**
+             * Broadcast Action: This intent is similar to DATA_SMS_RECEIVED_ACTION
+             * except that we will use this intent only when the SMS comes from
+             * OA: 10654040 to port number: 16998 for CMCC DM
+             *
+             * The intent will have the following extra values:</p>
+             *
+             * <ul>
+             *   <li><em>pdus</em> - An Object[] od byte[]s containing the PDUs
+             *   that make up the message.</li>
+             * </ul>
+             *
+             * <p>The extra values can be extracted using
+             * {@link #getMessagesFromIntent(Intent)}.</p>
+             *
+             * <p>If a BroadcastReceiver encounters an error while processing
+             * this intent it should set the result code appropriately.</p>
+             * @hide
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String DM_REGISTER_SMS_RECEIVED_ACTION =
+                    "android.intent.action.DM_REGISTER_SMS_RECEIVED";
+
+            /**
+             * Broadcast Action: This intent is used to send to check if mobile
+             * manager service(Moms feature) permit to dispatch SMS
+             *
+             * The intent will have the following extra values:</p>
+             *
+             * <ul>
+             *   <li><em>pdus</em> - An Object[] od byte[]s containing the PDUs
+             *   that make up the message.</li>
+             * </ul>
+             *
+             * * <p>If a BroadcastReceiver encounters an error while processing
+             * this intent it should set the result code appropriately.</p>
+             *
+             * @hide
+             */
+            @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+            public static final String MOMS_SMS_RECEIVED_ACTION =
+                    "android.intent.action.MOMS_SMS_RECEIVED";
+
+            /// M: c2k modify, telephony intents. @{
+            /**
+             * Broadcast Action: This intent is similar to
+             * DM_REGISTER_SMS_RECEIVED_ACTION but this one is for CDMA
+             * SMS(Teleservice is 0xFDED).
+             *
+             * @hide
+             */
+            public static final String CDMA_REG_SMS_ACTION =
+                    "android.telephony.sms.CDMA_REG_SMS_ACTION";
+            /**
+             * VIA add Broadcast Action: China Telecom request the devices must
+             * do a short message auto-register work after the modem fetched the
+             * network. The intent will be broadcasted by framework when the
+             * app-layer can do this work.
+             *
+             * @hide
+             */
+            public static final String CDMA_AUTO_SMS_REGISTER_FEASIBLE_ACTION =
+                    "android.provider.Telephony.CDMA_AUTO_SMS_REGISTER_FEASIBLE";
+            /// @}
+            // MTK-END
+
             /**
              * Read the PDUs out of an {@link #SMS_RECEIVED_ACTION} or a
              * {@link #DATA_SMS_RECEIVED_ACTION} intent.
@@ -1088,6 +1350,243 @@ public final class Telephony {
             }
         }
     }
+    // MTK-START
+    /**
+     * Base columns for tables that contain text based SMSCbs.
+     *
+     * @internal
+     * @hide
+     */
+    public interface TextBasedSmsCbColumns {
+
+        /**
+         * The SUB ID which indicated which Subscription the SMSCb comes from
+         * <P>Type: LONG</P>
+         */
+        public static final String SUBSCRIPTION_ID = "sub_id";
+
+        /**
+         * The channel ID of the message
+         * which is the message identifier defined in the Spec. 3GPP TS 23.041
+         * <P>Type: INTEGER</P>
+         */
+        public static final String CHANNEL_ID = "channel_id";
+
+        /**
+         * The date the message was sent
+         * <P>Type: INTEGER (long)</P>
+         */
+        public static final String DATE = "date";
+
+        /**
+         * Has the message been read
+         * <P>Type: INTEGER (boolean)</P>
+         */
+        public static final String READ = "read";
+
+        /**
+         * The body of the message
+         * <P>Type: TEXT</P>
+         */
+        public static final String BODY = "body";
+
+        /**
+         * The thread id of the message
+         * <P>Type: INTEGER</P>
+         */
+        public static final String THREAD_ID = "thread_id";
+
+        /**
+         * Indicates whether this message has been seen by the user. The "seen" flag will be
+         * used to figure out whether we need to throw up a statusbar notification or not.
+         */
+        public static final String SEEN = "seen";
+
+        /**
+         * Has the message been locked?
+         * <P>Type: INTEGER (boolean)</P>
+         */
+        public static final String LOCKED = "locked";
+    }
+
+    /**
+     * Contains all cell broadcast messages in the cell broadcast app.
+     *
+     * @internal
+     * @hide
+     */
+    public static final class SmsCb implements BaseColumns, TextBasedSmsCbColumns {
+
+        /**
+         * @internal
+         */
+        public static final Cursor query(ContentResolver cr, String[] projection) {
+            return cr.query(CONTENT_URI, projection, null, null, DEFAULT_SORT_ORDER);
+        }
+
+        /**
+         * @internal
+         */
+        public static final Cursor query(ContentResolver cr, String[] projection,
+                String where, String orderBy) {
+            return cr.query(CONTENT_URI, projection, where,
+                    null, orderBy == null ? DEFAULT_SORT_ORDER : orderBy);
+        }
+
+        /**
+         * The content:// style URL for cellbroadcast message table.
+         *
+         * @internal
+         */
+        public static final Uri CONTENT_URI = Uri.parse("content://cb/messages");
+
+        /**
+         * The content:// style URL for "canonical_addresses" table
+         * @internal
+         */
+        public static final Uri ADDRESS_URI = Uri.parse("content://cb/addresses");
+
+        /**
+         * The default sort order for this table
+         */
+        public static final String DEFAULT_SORT_ORDER = "date DESC";
+
+        /**
+         * Add an SMS to the given URI with thread_id specified.
+         *
+         * @param subId the subscription which the message belongs to
+         * @param resolver the content resolver to use
+         * @param uri the URI to add the message to
+         * @param sim_id the id of the SIM card
+         * @param channel_id the message identifier of the CB message
+         * @param date the timestamp for the message
+         * @param read true if the message has been read, false if not
+         * @param body the body of the message
+         * @return the URI for the new message
+         * @hide
+         * @internal
+         */
+        public static Uri addMessageToUri(int subId, ContentResolver resolver,
+                Uri uri, int channel_id, long date, boolean read, String body) {
+            ContentValues values = new ContentValues(5);
+
+            values.put(SUBSCRIPTION_ID, Integer.valueOf(subId));
+            values.put(DATE, Long.valueOf(date));
+            values.put(READ, read ? Integer.valueOf(1) : Integer.valueOf(0));
+            values.put(BODY, body);
+            values.put(CHANNEL_ID, Integer.valueOf(channel_id));
+
+            return resolver.insert(uri, values);
+        }
+
+        /**
+         * Contains all received SMSCb messages in the SMS app's.
+         *
+         * @internal
+         * @hide
+         */
+        public static final class Conversations
+                implements BaseColumns, TextBasedSmsCbColumns {
+            /**
+             * The content:// style URL for cell broadcast thread table.
+             *
+             * @internal
+             */
+            public static final Uri CONTENT_URI =
+                    Uri.parse("content://cb/threads");
+
+            /**
+             * The default sort order for this table
+             */
+            public static final String DEFAULT_SORT_ORDER = "date DESC";
+
+            /**
+             * The first 45 characters of the body of the message
+             * <P>Type: TEXT</P>
+             */
+            public static final String SNIPPET = "snippet";
+
+            /**
+             * The number of messages in the conversation
+             * <P>Type: INTEGER</P>
+             */
+            public static final String MESSAGE_COUNT = "msg_count";
+
+            /**
+             * The _id of address table in the conversation
+             * <P>Type: INTEGER</P>
+             */
+            public static final String ADDRESS_ID = "address_id";
+        }
+
+        /**
+         * Columns for the "canonical_addresses" table used by CB-SMS
+         *
+         * @hide
+         */
+        public interface CanonicalAddressesColumns extends BaseColumns {
+            /**
+             * An address used in CB-SMS. Just a channel number
+             * <P>Type: TEXT</P>
+             */
+            public static final String ADDRESS = "address";
+        }
+
+        /**
+         * Columns for the "canonical_addresses" table used by CB-SMS
+         *
+         * @internal
+         * @hide
+         */
+        public static final class CbChannel implements BaseColumns {
+            /**
+             * The content:// style URL for this table
+             * @internal
+             */
+            public static final Uri CONTENT_URI =
+                    Uri.parse("content://cb/channel");
+
+            public static final String NAME = "name";
+
+            public static final String NUMBER = "number";
+
+            public static final String ENABLE = "enable";
+
+        }
+
+        // TODO open when using CB Message
+        /**
+         * Read the PDUs out of an {@link #SMS_CB_RECEIVED_ACTION} intent.
+         *
+         * @internal
+         * @hide
+         */
+        public static final class Intents {
+
+            /**
+             * Read the PDUs out of an {@link #SMS_CB_RECEIVED_ACTION}.
+             *
+             * @param intent the intent to read from
+             * @return an array of SmsCbMessages for the PDUs
+             * @internal
+             */
+            public static final SmsCbMessage[] getMessagesFromIntent(
+                    Intent intent) {
+                Parcelable[] messages = intent.getParcelableArrayExtra("message");
+                if (messages == null) {
+                    return null;
+                }
+
+                SmsCbMessage[] msgs = new SmsCbMessage[messages.length];
+
+                for (int i = 0; i < messages.length; i++) {
+                    msgs[i] = (SmsCbMessage) messages[i];
+                }
+                return msgs;
+            }
+        }
+    }
+    // MTK-END
 
     /**
      * Base columns for tables that contain MMSs.
@@ -1240,6 +1739,16 @@ public final class Telephony {
          * <P>Type: INTEGER</P>
          */
         public static final String STATUS = "st";
+
+        // MTK-START
+        /**
+         * The status of the message.
+         * <P>Type: INTEGER</P>
+         *
+         * @hide
+         */
+        public static final String STATUS_EXT = "st_ext";
+        // MTK-END
 
         /**
          * The {@code transaction-id} of the message.
@@ -1658,6 +2167,16 @@ public final class Telephony {
          * <p>Type: TEXT</p>
          */
         public static final String CREATOR = "creator";
+
+        // MTK-START
+        /**
+         * The service center (SC) through which to send the message, if present
+         *
+         * <P>Type: TEXT</P>
+         * @hide
+         */
+        public static final String SERVICE_CENTER = "service_center";
+        // MTK-END
     }
 
     /**
@@ -1697,6 +2216,17 @@ public final class Telephony {
          * <P>Type: INTEGER</P>
          */
         public static final String MESSAGE_COUNT = "message_count";
+
+        // MTK-START
+         /**
+         * The read message count of the thread.
+         * <P>Type: INTEGER</P>
+         *
+         * @internal
+         * @hide
+         */
+        public static final String READ_COUNT = "readcount";
+        // MTK-END
 
         /**
          * Indicates whether all messages of the thread have been read.
@@ -1740,6 +2270,32 @@ public final class Telephony {
          * <P>Type: INTEGER (boolean)</P>
          */
         public static final String ARCHIVED = "archived";
+
+        // MTK-START
+        /**
+         * The date of the latest important message in the thread.
+         * <P>Type: TEXT</P>
+         *
+         * @hide
+         */
+        public static final String LATEST_IMPORTANT_DATE = "li_date";
+
+        /**
+         * The snippet of the latest important message in the thread.
+         * <P>Type: TEXT</P>
+         *
+         * @hide
+         */
+        public static final String LATEST_IMPORTANT_SNIPPET = "li_snippet";
+
+        /**
+         * The charset of the latest important snippet.
+         * <P>Type: INTEGER</P>
+         *
+         * @hide
+         */
+        public static final String LATEST_IMPORTANT_SNIPPET_CHARSET = "li_snippet_cs";
+        // MTK-END
     }
 
     /**
@@ -1774,6 +2330,50 @@ public final class Telephony {
         /** Thread type: broadcast thread. */
         public static final int BROADCAST_THREAD = 1;
 
+        // MTK-START
+        /**
+         * Wap push thread.
+         *
+         * @internal
+         * @hide
+         */
+        public static final int WAPPUSH_THREAD = 2;
+
+        /**
+         * Cell broadcast thread.
+         *
+         * @internal
+         * @hide
+         */
+        public static final int CELL_BROADCAST_THREAD = 3;
+
+        /**
+         * IP message thread.
+         *
+         * @internal
+         * @hide
+         */
+        public static final int IP_MESSAGE_GUIDE_THREAD = 10;
+
+        /**
+         * Whether a thread is being writen or not
+         * 0: normal 1: being writen
+         * <P>Type: INTEGER (boolean)</P>
+         *
+         * @internal
+         * @hide
+         */
+        public static final String STATUS = "status";
+
+        /**
+         * CT feature for date sent.
+         *
+         * @internal
+         * @hide
+         */
+        public static final String DATE_SENT = "date_sent";
+        // MTK-END
+
         /**
          * Not instantiable.
          * @hide
@@ -1794,6 +2394,54 @@ public final class Telephony {
             recipients.add(recipient);
             return getOrCreateThreadId(context, recipients);
         }
+
+        // MTK-START
+        /**
+         * Only for BackupRestore
+         * Given the recipients list and subject of an unsaved message,
+         * return its thread ID.  If the message starts a new thread,
+         * allocate a new thread ID.  Otherwise, use the appropriate
+         * existing thread ID.
+         *
+         * Find the thread ID of the same set of recipients (in
+         * any order, without any additions). If one
+         * is found, return it.  Otherwise, return a unique thread ID.
+         *
+         * @hide
+         */
+        public static long getOrCreateThreadId(
+                Context context, Set<String> recipients, String backupRestoreIndex) {
+            Uri.Builder uriBuilder = THREAD_ID_CONTENT_URI.buildUpon();
+
+            if (backupRestoreIndex != null && backupRestoreIndex.length() > 0) {
+                uriBuilder.appendQueryParameter("backupRestoreIndex", backupRestoreIndex);
+            }
+
+            for (String recipient : recipients) {
+                if (Mms.isEmailAddress(recipient)) {
+                    recipient = Mms.extractAddrSpec(recipient);
+                }
+                uriBuilder.appendQueryParameter("recipient", recipient);
+            }
+            Uri uri = uriBuilder.build();
+            Cursor cursor = SqliteWrapper.query(context, context.getContentResolver(),
+                    uri, ID_PROJECTION, null, null, null);
+            if (cursor != null) {
+                try {
+                    if (cursor.moveToFirst()) {
+                        Rlog.d(TAG, "getOrCreateThreadId for BackupRestore threadId =  " + cursor.getLong(0));
+                        return cursor.getLong(0);
+                    } else {
+                        Rlog.e(TAG, "getOrCreateThreadId for BackupRestore returned no rows!");
+                    }
+                } finally {
+                    cursor.close();
+                }
+            }
+            Rlog.e(TAG, "getOrCreateThreadId for BackupRestore failed with uri " + uri.toString());
+            throw new IllegalArgumentException("Unable to find or allocate a thread ID.");
+        }
+        // MTK-END
 
         /**
          * Given the recipients list and subject of an unsaved message,
@@ -1838,7 +2486,126 @@ public final class Telephony {
             Rlog.e(TAG, "getOrCreateThreadId failed with " + recipients.size() + " recipients");
             throw new IllegalArgumentException("Unable to find or allocate a thread ID.");
         }
+
+        // MTK-START
+        /**
+         * Get thread id by use recipient, without create.
+         * It's convenient for use with Contacts APP.
+         *
+         * @param context the context object to use.
+         * @param recipient the recipient to send to.
+         * @return the thread id for the recipient
+         *
+         * @hide
+         */
+        public static long getThreadId(Context context, String recipient) {
+            Uri.Builder uriBuilder = Uri.parse("content://sms/thread_id").buildUpon();
+
+            if (Mms.isEmailAddress(recipient)) {
+                recipient = Mms.extractAddrSpec(recipient);
+            }
+
+            uriBuilder.appendQueryParameter("recipient", recipient);
+
+            Uri uri = uriBuilder.build();
+
+            Cursor cursor = SqliteWrapper.query(context, context.getContentResolver(), uri,
+                    ID_PROJECTION, null, null, null);
+            if (cursor != null) {
+                try {
+                    if (cursor.moveToFirst()) {
+                        return cursor.getLong(0);
+                    } else {
+                        Rlog.e(TAG, "getThreadId returned no rows!");
+                    }
+                } finally {
+                    cursor.close();
+                }
+            }
+
+            Rlog.e(TAG, "getThreadId failed with uri " + uri.toString());
+            throw new IllegalArgumentException("Unable to find a thread ID.");
+        }
+        // MTK-END
     }
+
+    // MTK-START
+    /**
+     * IP message for thread setting
+     *
+     * @hide
+     */
+    public static final class ThreadSettings implements BaseColumns {
+
+        /**
+         * Whether a thread is set notification enabled
+         * <P>Type: INTEGER (boolean)</P>
+         *
+         * @internal
+         */
+        public static final String NOTIFICATION_ENABLE = "notification_enable";
+
+        /**
+         * Which thread does this settings belongs to
+         * <P>Type: INTEGER </P>
+         *
+         * @internal
+         */
+        public static final String THREAD_ID = "thread_id";
+
+        /**
+         * Whether a thread is set spam
+         * 0: normal 1: spam
+         * <P>Type: INTEGER (boolean)</P>
+         *
+         * @internal
+         */
+        public static final String SPAM = "spam";
+
+        /**
+         * Whether a thread is set mute
+         * 0: normal >1: mute duration
+         * <P>Type: INTEGER (boolean)</P>
+         *
+         * @internal
+         */
+        public static final String MUTE = "mute";
+
+        /**
+         * when does a thread be set mute
+         * 0: normal >1: mute start time
+         * <P>Type: INTEGER (boolean)</P>
+         *
+         * @internal
+         */
+        public static final String MUTE_START = "mute_start";
+
+        /**
+         * Whether a thread is set vibrate
+         * 0: normal 1: vibrate
+         * <P>Type: INTEGER (boolean)</P>
+         *
+         * @internal
+         */
+        public static final String VIBRATE = "vibrate";
+
+        /**
+         * Ringtone for a thread
+         * <P>Type: STRING</P>
+         *
+         * @internal
+         */
+        public static final String RINGTONE = "ringtone";
+
+        /**
+         * Wallpaper for a thread
+         * <P>Type: STRING</P>
+         *
+         * @internal
+         */
+        public static final String WALLPAPER = "_data";
+    }
+    // MTK-END
 
     /**
      * Contains all MMS messages.
@@ -2208,6 +2975,31 @@ public final class Telephony {
             public static final String SENT_TIME = "sent_time";
         }
 
+        // MTK-START
+        /**
+         * Temporarily file to pass to other app to use. For example, MMS application
+         * capture the image to camera app
+         *
+         * @internal
+         * @hide
+         */
+        public static final class ScrapSpace {
+            /**
+             * The content:// style URL for this table
+             * @internal
+             */
+            public static final Uri CONTENT_URI = Uri.parse("content://mms/scrapSpace");
+
+            /**
+             * This is the scrap file we use to store the media attachment when the user
+             * chooses to capture a photo to be attached . We pass {#link@Uri} to the Camera app,
+             * which streams the captured image to the uri. Internally we write the media content
+             * to this file. It's named '.temp.jpg' so Gallery won't pick it up.
+             */
+            public static final String SCRAP_FILE_PATH = "/sdcard/mms/scrapSpace/.temp.jpg";
+        }
+        // MTK-END
+
         /**
          * Intents class.
          */
@@ -2288,6 +3080,17 @@ public final class Telephony {
          */
         public static final Uri CONTENT_LOCKED_URI = Uri.parse(
                 "content://mms-sms/locked");
+
+       // MTK-START
+       /**
+        * The style URL for quick text table.
+        *
+        * @internal
+        * @hide
+        */
+        public static final Uri CONTENT_URI_QUICKTEXT = Uri.parse(
+                "content://mms-sms/quicktext");
+        // MTK-END
 
         /**
          * Pass in a query parameter called "pattern" which is the text to search for.
@@ -2455,6 +3258,14 @@ public final class Telephony {
          * The {@code content://} style URL for this table.
          */
         public static final Uri CONTENT_URI = Uri.parse("content://telephony/carriers");
+        
+        /**
+         * Databae column for carriers dm
+         * @internal
+         * @hide
+         */
+        public static final Uri CONTENT_URI_DM =
+            Uri.parse("content://telephony/carriers_dm");
 
         /**
          * The default sort order for this table.
@@ -2607,6 +3418,25 @@ public final class Telephony {
          */
         public static final String MVNO_MATCH_DATA = "mvno_match_data";
 
+          /**
+         * @hide
+         */
+        public static final String SPN = "spn";
+          /**
+         * @hide
+         */
+        public static final String IMSI = "imsi";
+          /**
+         * @hide
+         */
+        public static final String PNN = "pnn";
+
+        // M: CDMA ppp column support
+          /**
+         * @hide
+         */
+        public static final String PPP = "ppp";
+
         /**
          * The subscription to which the APN belongs to
          * <p>Type: INTEGER (long) </p>
@@ -2654,6 +3484,30 @@ public final class Telephony {
          * @hide
          */
         public static final String MTU = "mtu";
+
+        /* M: start */
+        /**
+         * @hide
+         */
+        public static final String OMACPID = "omacpid";
+        /**
+         * @hide
+         */
+        public static final String NAPID = "napid";
+        /**
+         * @hide
+         */
+        public static final String PROXYID = "proxyid";
+        /**
+         * @hide
+         */
+        public static final String SOURCE_TYPE = "sourcetype";
+        /* M: start */
+
+        /**
+         * @hide
+         */
+        public static final String CSD_NUM = "csdnum";
     }
 
     /**
@@ -2748,6 +3602,17 @@ public final class Telephony {
          */
         public static final String MESSAGE_READ = "read";
 
+        // MTK-START
+        /**
+         * Sepcify subscription identity for cell braodcast message
+         * The sub id the messge come from.
+         * <p>Type: LONG</p>
+         *
+         * @hide
+         */
+        public static final String SUBSCRIPTION_ID = "sub_id";
+        // MTK-END
+
         /**
          * Message format (3GPP or 3GPP2).
          * <P>Type: INTEGER</P>
@@ -2828,7 +3693,305 @@ public final class Telephony {
                 CMAS_RESPONSE_TYPE,
                 CMAS_SEVERITY,
                 CMAS_URGENCY,
-                CMAS_CERTAINTY
+                CMAS_CERTAINTY,
+                // MTK-START
+                SUBSCRIPTION_ID
+                // MTK-END
         };
     }
+
+    // MTK-START
+    /**
+     * WapPush table columns
+     *
+     * @internal
+     * @hide
+     */
+    public static final class WapPush implements BaseColumns {
+
+        /**
+         * The content:// style URL for wap push table.
+         *
+         * @internal
+         */
+        public static final Uri CONTENT_URI = Uri.parse("content://wappush");
+
+        /**
+         * The content:// style URL for wap push SI table.
+         * @internal
+         */
+        public static final Uri CONTENT_URI_SI = Uri.parse("content://wappush/si");
+
+        /**
+         * The content:// style URL for wap push SL table.
+         *
+         * @internal
+         */
+        public static final Uri CONTENT_URI_SL = Uri.parse("content://wappush/sl");
+
+        /**
+         * The content:// style URL for thread id table.
+         *
+         * @internal
+         */
+        public static final Uri CONTENT_URI_THREAD = Uri.parse("content://wappush/thread_id");
+
+        // Database Columns
+        /**
+         * Database column name of thread id.
+         *
+         * @internal
+         */
+        public static final String THREAD_ID = "thread_id";
+
+        /**
+         * Database column name of sort order.
+         *
+         * @internal
+         */
+        public static final String DEFAULT_SORT_ORDER = "date ASC";
+
+        /**
+         * Database column name of address.
+         *
+         * @internal
+         */
+        public static final String ADDR = "address";
+
+        /**
+         * Database column name of service address.
+         *
+         * @internal
+         */
+        public static final String SERVICE_ADDR = "service_center";
+
+        /**
+         * Database column name of read.
+         *
+         * @internal
+         */
+        public static final String READ = "read";
+
+        /**
+         * Database column name of seen.
+         *
+         * @internal
+         */
+        public static final String SEEN = "seen";
+
+        /**
+         * Database column name of lock status.
+         *
+         * @internal
+         */
+        public static final String LOCKED = "locked";
+
+        /**
+         * Database column name of error.
+         *
+         * @internal
+         */
+        public static final String ERROR = "error";
+
+        /**
+         * Database column name of date.
+         *
+         * @internal
+         */
+        public static final String DATE = "date";
+
+        /**
+         * Database column name of wap push type.
+         *
+         * @internal
+         */
+        public static final String TYPE = "type";
+
+        /**
+         * Database column name of SIID.
+         *
+         * @internal
+         */
+        public static final String SIID = "siid";
+
+        /**
+         * Database column name of URL.
+         *
+         * @internal
+         */
+        public static final String URL = "url";
+
+        /**
+         * Database column name of create.
+         *
+         * @internal
+         */
+        public static final String CREATE = "created";
+
+        /**
+         * Database column name of expiration.
+         *
+         * @internal
+         */
+        public static final String EXPIRATION = "expiration";
+
+        /**
+         * Database column name of read.
+         *
+         * @internal
+         */
+        public static final String ACTION = "action";
+
+        /**
+         * Database column name of text.
+         *
+         * @internal
+         */
+        public static final String TEXT = "text";
+
+        /**
+         * Database column name of subscription id.
+         *
+         * @internal
+         */
+        public static final String SUBSCRIPTION_ID = "sub_id";
+
+        /**
+         * Database value of column SI.
+         *
+         * @internal
+         */
+        public static final int TYPE_SI = 0;
+
+        /**
+         * Database value of column SI.
+         *
+         * @internal
+         */
+        public static final int TYPE_SL = 1;
+
+        /**
+         * Database read value of column STATUS.
+         *
+         * @internal
+         */
+        public static final int STATUS_SEEN = 1;
+
+        /**
+         * Database read value of column STATUS.
+         *
+         * @internal
+         */
+        public static final int STATUS_UNSEEN = 0;
+
+        /**
+         * Database read value of column READ.
+         *
+         * @internal
+         */
+        public static final int STATUS_READ = 1;
+
+        /**
+         * Database unread value of column READ.
+         *
+         * @internal
+         */
+        public static final int STATUS_UNREAD = 0;
+
+        public static final int STATUS_LOCKED = 1;
+        public static final int STATUS_UNLOCKED = 0;
+    }
+
+    /**
+     * Mwi table columns
+     *
+     * @internal
+     * @hide
+     */
+    public static final class Mwi implements BaseColumns {
+        /**
+         * The content:// style URL for message waiting message table.
+         *
+         * @internal
+         */
+        public static final Uri CONTENT_URI = Uri.parse("content://mwimsg");
+
+        /**
+         * Database column name of message account.
+         *
+         * @internal
+         */
+        public static final String MSG_ACCOUNT = "msg_account";
+
+        /**
+         * Database column name of to account.
+         *
+         * @internal
+         */
+        public static final String TO = "to_account";
+
+        /**
+         * Database column name of from account.
+         *
+         * @internal
+         */
+        public static final String FROM = "from_account";
+
+        /**
+         * Database column name of subject.
+         *
+         * @internal
+         */
+        public static final String SUBJECT = "subject";
+
+        /**
+         * Database column name of date.
+         *
+         * @internal
+         */
+        public static final String MSG_DATE = "msg_date";
+
+        /**
+         * Database column name of wap push priority.
+         *
+         * @internal
+         */
+        public static final String PRIORITY = "priority";
+
+        /**
+         * Database column name of id.
+         *
+         * @internal
+         */
+        public static final String MSG_ID = "msg_id";
+
+        /**
+         * Database column name of context.
+         *
+         * @internal
+         */
+        public static final String MSG_CONTEXT = "msg_context";
+
+        /**
+         * Database column name of read status.
+         *
+         * @internal
+         */
+        public static final String READ = "read";
+
+        /**
+         * Database column name of seen status.
+         *
+         * @internal
+         */
+        public static final String SEEN = "seen";
+
+        /**
+         * Database column name of content.
+         *
+         * @internal
+         */
+        public static final String GOT_CONTENT = "got_content";
+    }
+    // MTK-END
 }

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,7 +43,14 @@ public abstract class CatLog {
 
         Rlog.d("CAT", caller + ": " + msg);
     }
+    /**
+     * Function to classify error type of log message.
+     * @internal
+     */
     public static void e(Object caller, String msg) {
+        if (!DEBUG) {
+            return;
+        }
         String className = caller.getClass().getName();
         Rlog.e("CAT", className.substring(className.lastIndexOf('.') + 1) + ": "
                 + msg);

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2006 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +24,9 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.app.PendingIntent.CanceledException;
+// MTK-START
+import android.content.BroadcastReceiver;
+// MTK-END
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -33,6 +41,9 @@ import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.os.AsyncResult;
 import android.os.Binder;
+// MTK-START
+import android.os.Bundle;
+// MTK-END
 import android.os.Handler;
 import android.os.Message;
 import android.os.Process;
@@ -42,6 +53,9 @@ import android.os.UserHandle;
 import android.provider.Settings;
 import android.provider.Telephony;
 import android.provider.Telephony.Sms;
+// MTK-START
+import android.provider.Telephony.Sms.Intents;
+// MTK-END
 import android.service.carrier.CarrierMessagingService;
 import android.service.carrier.ICarrierMessagingCallback;
 import android.service.carrier.ICarrierMessagingService;
@@ -81,6 +95,23 @@ import static android.telephony.SmsManager.RESULT_ERROR_LIMIT_EXCEEDED;
 import static android.telephony.SmsManager.RESULT_ERROR_NO_SERVICE;
 import static android.telephony.SmsManager.RESULT_ERROR_NULL_PDU;
 import static android.telephony.SmsManager.RESULT_ERROR_RADIO_OFF;
+
+// MTK-START
+import android.content.IntentFilter;
+import android.telephony.SubscriptionManager;
+
+// SMS ready
+import android.os.PowerManager;
+
+// DM-Agent
+
+import android.app.ActivityManager;
+import java.util.Iterator;
+
+// Mobile manager service for phone privacy lock
+import com.mediatek.internal.telephony.ppl.IPplSmsFilter;
+import com.mediatek.internal.telephony.ppl.PplSmsFilterExtension;
+// MTK-END
 
 public abstract class SMSDispatcher extends Handler {
     static final String TAG = "SMSDispatcher";    // accessed from inner class
@@ -134,6 +165,26 @@ public abstract class SMSDispatcher extends Handler {
     protected static final int EVENT_NEW_ICC_SMS = 14;
     protected static final int EVENT_ICC_CHANGED = 15;
 
+    // MTK-START
+    /** Activate/Inactivate Cell Broadcast complete */
+    static final protected int EVENT_ACTIVATE_CB_COMPLETE = 101;
+
+    /** Get Cell Broadcast Configuration complete */
+    static final protected int EVENT_GET_CB_CONFIG_COMPLETE = 102;
+
+    /** Set Cell Broadcast Configuration complete */
+    static final protected int EVENT_SET_CB_CONFIG_COMPLETE = 103;
+
+    /** Get Cell Broadcast Configuration complete */
+    static final protected int EVENT_QUERY_CB_ACTIVATION_COMPLETE = 104;
+
+    /** SMS subsystem in the modem is ready. */
+    static final protected int EVENT_SMS_READY = 105;
+
+    /** copy text message to the ICC card */
+    static final protected int EVENT_COPY_TEXT_MESSAGE_DONE = 106;
+    // MTK-END
+
     protected PhoneBase mPhone;
     protected final Context mContext;
     protected final ContentResolver mResolver;
@@ -165,6 +216,16 @@ public abstract class SMSDispatcher extends Handler {
     /** Number of outgoing SmsTrackers waiting for user confirmation. */
     private int mPendingTrackerCount;
 
+    // MTK-START
+    /**
+     * This list is used to maintain the unsent Sms Tracker
+     * we have this queue list to avoid we send a lot of SEND_SMS request to RIL
+     * and block other commands.
+     * So we only send the next SEND_SMS request after the previously request has been completed
+     */
+    protected ArrayList<SmsTracker> mSTrackersQueue = new ArrayList<SmsTracker>(MO_MSG_QUEUE_LIMIT);
+    // MTK-END
+
     /* Flags indicating whether the current device allows sms service */
     protected boolean mSmsCapable = true;
     protected boolean mSmsSendDisabled;
@@ -173,6 +234,34 @@ public abstract class SMSDispatcher extends Handler {
         sConcatenatedRef += 1;
         return sConcatenatedRef;
     }
+
+    // MTK-START
+    /**
+     * Hold the wake lock for 5 seconds, which should be enough time for
+     * any receiver(s) to grab its own wake lock.(SMS ready intent)
+     */
+    protected static final int WAKE_LOCK_TIMEOUT = 500;
+    /** Wake lock to ensure device stays awake while dispatching the SMS ready intent. */
+    protected PowerManager.WakeLock mWakeLock;
+
+    // MTK_OPTR_PROTECT_START
+    protected static boolean isDmLock = false;
+    // MTK_OPTR_PROTECT_END
+
+    // flag of storage status
+    /** For FTA test only */
+    protected boolean mStorageAvailable = true;
+
+    protected boolean mSmsReady = false;
+
+    // for copying text message to ICC card
+    protected int messageCountNeedCopy = 0;
+    protected Object mLock = new Object();
+    protected boolean mSuccess = true;
+
+    protected static String PDU_SIZE = "pdu_size";
+    protected static String MSG_REF_NUM = "msg_ref_num";
+    // MTK-END
 
     /**
      * Create a new SMS dispatcher.
@@ -198,6 +287,20 @@ public abstract class SMSDispatcher extends Handler {
                 mPhone.getPhoneId(), mSmsCapable);
         Rlog.d(TAG, "SMSDispatcher: ctor mSmsCapable=" + mSmsCapable + " format=" + getFormat()
                 + " mSmsSendDisabled=" + mSmsSendDisabled);
+
+        // MTK-START
+        createWakelock();
+        mCi.registerForSmsReady(this, EVENT_SMS_READY, null);
+
+        // MTK_OPTR_PROTECT_START
+        // register DM broadcast receiver
+        IntentFilter dmFilter = new IntentFilter();
+        dmFilter.addAction("com.mediatek.dm.LAWMO_LOCK");
+        dmFilter.addAction("com.mediatek.dm.LAWMO_UNLOCK");
+        mContext.registerReceiver(mDMLockReceiver, dmFilter);
+        // MTK_OPTR_PROTECT_END
+
+        // MTK-END
     }
 
     /**
@@ -255,6 +358,14 @@ public abstract class SMSDispatcher extends Handler {
     protected void handleStatusReport(Object o) {
         Rlog.d(TAG, "handleStatusReport() called with no subclass.");
     }
+
+    // MTK-START
+    @Override
+    protected void finalize() throws Throwable {
+        super.finalize();
+        Rlog.d(TAG, "SMSDispatcher finalized");
+    }
+    // MTK-END
 
     /* TODO: Need to figure out how to keep track of status report routing in a
      *       persistent manner. If the phone process restarts (reboot or crash),
@@ -322,6 +433,52 @@ public abstract class SMSDispatcher extends Handler {
         case EVENT_HANDLE_STATUS_REPORT:
             handleStatusReport(msg.obj);
             break;
+
+        // MTK-START
+        case EVENT_ACTIVATE_CB_COMPLETE:
+        case EVENT_GET_CB_CONFIG_COMPLETE:
+        case EVENT_SET_CB_CONFIG_COMPLETE:
+        {
+            AsyncResult ar;
+            ar = (AsyncResult) msg.obj;
+            AsyncResult.forMessage((Message) ar.userObj, ar.result, ar.exception);
+            ((Message) ar.userObj).sendToTarget();
+            break;
+        }
+
+        case EVENT_QUERY_CB_ACTIVATION_COMPLETE:
+            handleQueryCbActivation((AsyncResult) msg.obj);
+            break;
+
+        case EVENT_SMS_READY:
+        {
+            Rlog.d(TAG, "SMS is ready, Phone: " + mPhone.getPhoneId());
+            mSmsReady = true;
+
+            notifySmsReady(mSmsReady);
+            break;
+        }
+
+        case EVENT_COPY_TEXT_MESSAGE_DONE:
+        {
+            AsyncResult ar;
+            ar = (AsyncResult) msg.obj;
+            synchronized (mLock) {
+                mSuccess = (ar.exception == null);
+
+                if (mSuccess == true) {
+                    Rlog.d(TAG, "[copyText success to copy one");
+                    messageCountNeedCopy -= 1;
+                } else {
+                    Rlog.d(TAG, "[copyText fail to copy one");
+                    messageCountNeedCopy = 0;
+                }
+
+                mLock.notifyAll();
+            }
+            break;
+        }
+        // MTK-END
 
         default:
             Rlog.e(TAG, "handleMessage() ignoring message of unexpected type " + msg.what);
@@ -500,19 +657,28 @@ public abstract class SMSDispatcher extends Handler {
     /**
      * Use the carrier messaging service to send a multipart text SMS.
      */
-    private final class MultipartSmsSender extends CarrierMessagingServiceManager {
+    // MTK-START
+    // Change as protected due to child class needs to use it
+    protected final class MultipartSmsSender extends CarrierMessagingServiceManager {
+    // MTK-END
         private final List<String> mParts;
         public final SmsTracker[] mTrackers;
         // Initialized in sendSmsByCarrierApp
         private volatile MultipartSmsSenderCallback mSenderCallback;
 
-        MultipartSmsSender(ArrayList<String> parts, SmsTracker[] trackers) {
+        // MTK-START
+        // Change as public due to child class needs to use it
+        public MultipartSmsSender(ArrayList<String> parts, SmsTracker[] trackers) {
+        // MTK-END
             mParts = parts;
             mTrackers = trackers;
         }
 
-        void sendSmsByCarrierApp(String carrierPackageName,
+        // MTK-START
+        // Change as public due to child class needs to use it
+        public void sendSmsByCarrierApp(String carrierPackageName,
                                  MultipartSmsSenderCallback senderCallback) {
+        // MTK-END
             mSenderCallback = senderCallback;
             if (!bindToCarrierMessagingService(mContext, carrierPackageName)) {
                 Rlog.e(TAG, "bindService() for carrier messaging service failed");
@@ -542,10 +708,16 @@ public abstract class SMSDispatcher extends Handler {
      * Callback for MultipartSmsSender from the carrier messaging service.
      * Once the result is ready, the carrier messaging service connection is disposed.
      */
-    private final class MultipartSmsSenderCallback extends ICarrierMessagingCallback.Stub {
+    // MTK-START
+    // Change as protected due to child class needs to use it
+    protected final class MultipartSmsSenderCallback extends ICarrierMessagingCallback.Stub {
+    // MTK-END
         private final MultipartSmsSender mSmsSender;
 
-        MultipartSmsSenderCallback(MultipartSmsSender smsSender) {
+        // MTK-START
+        // Change as public due to child class needs to use it
+        public MultipartSmsSenderCallback(MultipartSmsSender smsSender) {
+        // MTK-END
             mSmsSender = smsSender;
         }
 
@@ -615,6 +787,10 @@ public abstract class SMSDispatcher extends Handler {
         SmsTracker tracker = (SmsTracker) ar.userObj;
         PendingIntent sentIntent = tracker.mSentIntent;
 
+        // MTK-START
+        handleSendNextTracker(tracker);
+        // MTK-END
+
         if (ar.result != null) {
             tracker.mMessageRef = ((SmsResponse)ar.result).mMessageRef;
         } else {
@@ -651,20 +827,22 @@ public abstract class SMSDispatcher extends Handler {
             // if sms over IMS is not supported on data and voice is not available...
             if (!isIms() && ss != ServiceState.STATE_IN_SERVICE) {
                 tracker.onFailed(mContext, getNotInServiceError(ss), 0/*errorCode*/);
-            } else if ((((CommandException)(ar.exception)).getCommandError()
-                    == CommandException.Error.SMS_FAIL_RETRY) &&
-                   tracker.mRetryCount < MAX_SEND_RETRIES) {
-                // Retry after a delay if needed.
-                // TODO: According to TS 23.040, 9.2.3.6, we should resend
-                //       with the same TP-MR as the failed message, and
-                //       TP-RD set to 1.  However, we don't have a means of
-                //       knowing the MR for the failed message (EF_SMSstatus
-                //       may or may not have the MR corresponding to this
-                //       message, depending on the failure).  Also, in some
-                //       implementations this retry is handled by the baseband.
-                tracker.mRetryCount++;
-                Message retryMsg = obtainMessage(EVENT_SEND_RETRY, tracker);
-                sendMessageDelayed(retryMsg, SEND_RETRY_DELAY);
+            /* MTK-START: No need to retry due to modem has already retry it */
+//          } else if ((((CommandException)(ar.exception)).getCommandError()
+//                  == CommandException.Error.SMS_FAIL_RETRY) &&
+//                 tracker.mRetryCount < MAX_SEND_RETRIES) {
+//              // Retry after a delay if needed.
+//              // TODO: According to TS 23.040, 9.2.3.6, we should resend
+//              //       with the same TP-MR as the failed message, and
+//              //       TP-RD set to 1.  However, we don't have a means of
+//              //       knowing the MR for the failed message (EF_SMSstatus
+//              //       may or may not have the MR corresponding to this
+//              //       message, depending on the failure).  Also, in some
+//              //       implementations this retry is handled by the baseband.
+//              tracker.mRetryCount++;
+//              Message retryMsg = obtainMessage(EVENT_SEND_RETRY, tracker);
+//              sendMessageDelayed(retryMsg, SEND_RETRY_DELAY);
+            /* MTK-END: No need to retry due to modem has already retry it */
             } else {
                 int errorCode = 0;
                 if (ar.result != null) {
@@ -697,8 +875,14 @@ public abstract class SMSDispatcher extends Handler {
                 } else {
                     sentIntent.send(RESULT_ERROR_NO_SERVICE);
                 }
-            } catch (CanceledException ex) {}
+        // MTK-START
+            } catch (CanceledException ex) {
+                Rlog.d(TAG, "CanceledException happened when send sms fail with sentIntent due to no service");
+            }
+        } else {
+            Rlog.d(TAG, "Send sms fail without sentIntent due to no service");
         }
+        // MTK-END
     }
 
     /**
@@ -913,6 +1097,19 @@ public abstract class SMSDispatcher extends Handler {
             AtomicInteger unsentPartCount, AtomicBoolean anyPartFailed, Uri messageUri,
             String fullMessageText);
 
+    // MTK-START, support validity for operator feature
+    /**
+     * Create a new SubmitPdu with validity period and send it.
+     */
+    protected SmsTracker getNewSubmitPduTracker(String destinationAddress, String scAddress,
+            String message, SmsHeader smsHeader, int encoding,
+            PendingIntent sentIntent, PendingIntent deliveryIntent, boolean lastPart,
+            AtomicInteger unsentPartCount, AtomicBoolean anyPartFailed, Uri messageUri,
+            String fullMessageText, int validityPeriod) {
+            return null;
+    }
+    // MTK-END
+
     /**
      * Send an SMS
      * @param tracker will contain:
@@ -962,6 +1159,19 @@ public abstract class SMSDispatcher extends Handler {
             return;
         }
 
+        // MTK-START
+        /* Because it may have multiple apks use the same uid, ex. Mms.apk and omacp.apk, we need to
+         * exactly find the correct calling apk. We should use running process to check the correct
+         * apk. If we could not find the process via pid, this apk may be killed. We will use the
+         * default behavior, find the first package name via uid.
+         */
+        String packageName = getPackageNameViaProcessId(packageNames);
+        if (packageName != null) {
+            packageNames[0] = packageName;
+        }
+        Rlog.d(TAG, "sendRawPdu and get the package name via process id: " + packageNames[0]);
+        // MTK-END
+
         // Get package info via packagemanager
         PackageInfo appInfo;
         try {
@@ -1002,19 +1212,27 @@ public abstract class SMSDispatcher extends Handler {
             int rule = mPremiumSmsRule.get();
             int smsCategory = SmsUsageMonitor.CATEGORY_NOT_SHORT_CODE;
             if (rule == PREMIUM_RULE_USE_SIM || rule == PREMIUM_RULE_USE_BOTH) {
-                String simCountryIso = mTelephonyManager.getSimCountryIso();
+                // MTK-START
+                String simCountryIso = mTelephonyManager.getSimCountryIso(getSubId());
+                // MTK-END
                 if (simCountryIso == null || simCountryIso.length() != 2) {
                     Rlog.e(TAG, "Can't get SIM country Iso: trying network country Iso");
-                    simCountryIso = mTelephonyManager.getNetworkCountryIso();
+                    // MTK-START
+                    simCountryIso = mTelephonyManager.getNetworkCountryIsoForSubscription(getSubId());
+                    // MTK-END
                 }
 
                 smsCategory = mUsageMonitor.checkDestination(tracker.mDestAddress, simCountryIso);
             }
             if (rule == PREMIUM_RULE_USE_NETWORK || rule == PREMIUM_RULE_USE_BOTH) {
-                String networkCountryIso = mTelephonyManager.getNetworkCountryIso();
+                // MTK-START
+                String networkCountryIso = mTelephonyManager.getNetworkCountryIsoForSubscription(getSubId());
+                // MTK-END
                 if (networkCountryIso == null || networkCountryIso.length() != 2) {
                     Rlog.e(TAG, "Can't get Network country Iso: trying SIM country Iso");
-                    networkCountryIso = mTelephonyManager.getSimCountryIso();
+                    // MTK-START
+                    networkCountryIso = mTelephonyManager.getSimCountryIso(getSubId());
+                    // MTK-END
                 }
 
                 smsCategory = SmsUsageMonitor.mergeShortCodeCategories(smsCategory,
@@ -1203,6 +1421,14 @@ public abstract class SMSDispatcher extends Handler {
         mUsageMonitor.setPremiumSmsPermission(packageName, permission);
     }
 
+    // MTK-START
+    protected static String getAppNameByIntent(PendingIntent intent) {
+        Resources r = Resources.getSystem();
+        return (intent != null) ? intent.getTargetPackage()
+            : "Resource unusable"; //r.getString(R.string.sms_control_default_app_name);
+    }
+    // MTK-END
+
     /**
      * Send the message along to the radio.
      *
@@ -1303,6 +1529,10 @@ public abstract class SMSDispatcher extends Handler {
 
         // If this is a text message (instead of data message)
         private boolean mIsText;
+        // MTK-START
+        /** Mobile manager service for phone privacy lock */
+        private IPplSmsFilter mPplSmsFilter = null;
+        // MTK-END
 
         private SmsTracker(HashMap<String, Object> data, PendingIntent sentIntent,
                 PendingIntent deliveryIntent, PackageInfo appInfo, String destAddr, String format,
@@ -1387,7 +1617,8 @@ public abstract class SMSDispatcher extends Handler {
          */
         private Uri persistSentMessageIfRequired(Context context, int messageType, int errorCode) {
             if (!mIsText ||
-                    !SmsApplication.shouldWriteMessageForPackage(mAppInfo.packageName, context)) {
+                    !SmsApplication.shouldWriteMessageForPackage(mAppInfo.packageName, context) ||
+                    isFilterOutByPpl(context, mDestAddress, mFullMessageText)) {
                 return null;
             }
             Rlog.d(TAG, "Persist SMS into "
@@ -1481,6 +1712,21 @@ public abstract class SMSDispatcher extends Handler {
                         // Is multipart and last part
                         fillIn.putExtra(SEND_NEXT_MSG_EXTRA, true);
                     }
+                    // MTK-START
+                    int szPdu = 0;
+                    int smscLength = 0;
+                    int pduLength = 0;
+                    if (mData != null) {
+                        if (mData.get("smsc") != null) {
+                            smscLength = ((byte[]) mData.get("smsc")).length;
+                        }
+                        if (mData.get("pdu") != null) {
+                            pduLength = ((byte[]) mData.get("pdu")).length;
+                        }
+                        szPdu = smscLength + pduLength;
+                    }
+                    fillIn.putExtra(PDU_SIZE, szPdu);
+                    // MTK-END
                     mSentIntent.send(context, error, fillIn);
                 } catch (CanceledException ex) {
                     Rlog.e(TAG, "Failed to send result");
@@ -1518,12 +1764,75 @@ public abstract class SMSDispatcher extends Handler {
                         // Is multipart and last part
                         fillIn.putExtra(SEND_NEXT_MSG_EXTRA, true);
                     }
+                    // MTK-START
+                    int szPdu = 0;
+                    int smscLength = 0;
+                    int pduLength = 0;
+                    if (mData != null) {
+                        if (mData.get("smsc") != null) {
+                            smscLength = ((byte[]) mData.get("smsc")).length;
+                        }
+                        if (mData.get("pdu") != null) {
+                            pduLength = ((byte[]) mData.get("pdu")).length;
+                        }
+                        szPdu = smscLength + pduLength;
+                    }
+                    fillIn.putExtra(PDU_SIZE, szPdu);
+                    fillIn.putExtra(MSG_REF_NUM, mMessageRef);
+                    Rlog.d(TAG, "message reference number : " + mMessageRef);
+                    // MTK-END
                     mSentIntent.send(context, Activity.RESULT_OK, fillIn);
                 } catch (CanceledException ex) {
                     Rlog.e(TAG, "Failed to send result");
                 }
             }
         }
+
+        // MTK-START
+        /**
+         * Filter out the MO sms by phone privacy lock.
+         * For mobile manager service, the native apk needs to send a special sms to server and
+         * doesn't want to show to end user. But sms frameworks will help to write to database if
+         * app is not default sms application.
+         * Therefore, sms framework need to filter out this kind of sms and not showing to end user.
+         *
+         * @param destAddr destination address
+         * @param text content of message
+         *
+         * @return true filter out by ppl; false not filter out by ppl
+         *
+         */
+        protected boolean isFilterOutByPpl(Context context, String destAddr, String text) {
+            // MTK-START
+            // Create the instance for phone privacy lock
+            if (mPplSmsFilter == null) {
+                mPplSmsFilter = new PplSmsFilterExtension(context);
+            }
+            // MTK-END
+
+            boolean pplResult = false;
+
+            if (!SmsConstants.isPrivacyLockSupport()) {
+                return false;
+            }
+
+            /* Start to check phone privacy check if it does not need to write to database */
+            Rlog.d(TAG, "[Moms] Phone privacy check start");
+
+            Bundle pplData = new Bundle();
+            pplData.putString(mPplSmsFilter.KEY_MSG_CONTENT, text);
+            pplData.putString(mPplSmsFilter.KEY_DST_ADDR, destAddr);
+            pplData.putString(mPplSmsFilter.KEY_FORMAT, mFormat);
+            pplData.putInt(mPplSmsFilter.KEY_SUB_ID, mSubId);
+            pplData.putInt(mPplSmsFilter.KEY_SMS_TYPE, 1);
+
+            pplResult = mPplSmsFilter.pplFilter(pplData);
+
+            Rlog.d(TAG, "[Moms] Phone privacy check end, Need to filter(result) = " + pplResult);
+
+            return pplResult;
+        }
+        //MTK-END
     }
 
     protected SmsTracker getSmsTracker(HashMap<String, Object> data, PendingIntent sentIntent,
@@ -1539,6 +1848,18 @@ public abstract class SMSDispatcher extends Handler {
         if (packageNames != null && packageNames.length > 0) {
             try {
                 // XXX this is lossy- apps can share a UID
+                // MTK-START
+                /* Because it may have multiple apks use the same uid, ex. Mms.apk and omacp.apk, we need to
+                 * exactly find the correct calling apk. We should use running process to check the correct
+                 * apk. If we could not find the process via pid, this apk may be killed. We will use the
+                 * default behavior, find the first package name via uid.
+                */
+                String packageName = getPackageNameViaProcessId(packageNames);
+                if (packageName != null) {
+                    packageNames[0] = packageName;
+                }
+                Rlog.d(TAG, "SmsTrackerFactory and get the package name via process id: " + packageNames[0]);
+                // MTK-END
                 appInfo = pm.getPackageInfo(packageNames[0], PackageManager.GET_SIGNATURES);
             } catch (PackageManager.NameNotFoundException e) {
                 // error will be logged in sendRawPdu
@@ -1686,7 +2007,9 @@ public abstract class SMSDispatcher extends Handler {
         }
     }
 
-    private String getMultipartMessageText(ArrayList<String> parts) {
+    // MTK-START, modify as protect to let GsmSmsDispatcher to use
+    protected String getMultipartMessageText(ArrayList<String> parts) {
+    // MTK-END
         final StringBuilder sb = new StringBuilder();
         for (String part : parts) {
             if (part != null) {
@@ -1728,4 +2051,347 @@ public abstract class SMSDispatcher extends Handler {
             throw new SecurityException("Caller is not phone or carrier app!");
         }
     }
+
+    // MTK-START
+    /**
+     * create wake lock for sms ready intent.
+     */
+    private void createWakelock() {
+        PowerManager pm = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
+        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SMSDispatcher");
+        mWakeLock.setReferenceCounted(true);
+    }
+
+    /**
+     * Called when IccSmsInterfaceManager update SIM card fail due to SIM_FULL.
+     */
+    protected void handleIccFull() {
+        // default not handle anything
+        return;
+    }
+
+    /**
+     * Called when a CB activation result is received.
+     *
+     * @param ar AsyncResult passed into the message handler.
+     */
+    protected void handleQueryCbActivation(AsyncResult ar) {
+        Rlog.e(TAG, "didn't support cellBoradcast in the CDMA phone");
+    }
+
+    // MTK_OPTR_PROTECT_START
+    private BroadcastReceiver mDMLockReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            Rlog.d(TAG, "[DM-Lock receive lock/unlock intent");
+            if (intent.getAction() != null)
+            {
+                if (intent.getAction().equals("com.mediatek.dm.LAWMO_LOCK")) {
+                    Rlog.d(TAG, "[DM-Lock DM is locked now");
+                    isDmLock = true;
+                } else if (intent.getAction().equals("com.mediatek.dm.LAWMO_UNLOCK")) {
+                    Rlog.d(TAG, "[DM-Lock DM is unlocked now");
+                    isDmLock = false;
+                }
+            }
+        }
+    };
+    // MTK_OPTR_PROTECT_END
+
+    /**
+     * Send a data based SMS to a specific application port.
+     *
+     * @param destAddr the address to send the message to
+     * @param scAddr is the service center address or null to use
+     *  the current default SMSC
+     * @param destPort the port to deliver the message to
+     * @param originalPort the port to deliver the message from
+     * @param data the body of the message to send
+     * @param sentIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is successfully sent, or failed.
+     *  The result code will be <code>Activity.RESULT_OK<code> for success,
+     *  or one of these errors:<br>
+     *  <code>RESULT_ERROR_GENERIC_FAILURE</code><br>
+     *  <code>RESULT_ERROR_RADIO_OFF</code><br>
+     *  <code>RESULT_ERROR_NULL_PDU</code><br>
+     *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> the sentIntent may include
+     *  the extra "errorCode" containing a radio technology specific value,
+     *  generally only useful for troubleshooting.<br>
+     *  The per-application based SMS control checks sentIntent. If sentIntent
+     *  is NULL the caller will be checked against all unknown applications,
+     *  which cause smaller number of SMS to be sent in checking period.
+     * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is delivered to the recipient.  The
+     *  raw pdu of the status report is in the extended data ("pdu").
+     */
+    protected void sendData(String destAddr, String scAddr, int destPort, int originalPort,
+            byte[] data, PendingIntent sentIntent, PendingIntent deliveryIntent) {
+    }
+
+    /**
+     * Send a multi-part data based SMS.
+     *
+     * @param destinationAddress the address to send the message to
+     * @param scAddress is the service center address or null to use
+     *   the current default SMSC
+     * @param data an <code>ArrayList</code> of strings that, in order,
+     *   comprise the original message
+     * @param destPort the port to deliver the message to
+     * @param data an array of data messages in order,
+     *   comprise the original message
+     * @param sentIntents if not null, an <code>ArrayList</code> of
+     *   <code>PendingIntent</code>s (one for each message part) that is
+     *   broadcast when the corresponding message part has been sent.
+     *   The result code will be <code>Activity.RESULT_OK<code> for success,
+     *   or one of these errors:
+     *   <code>RESULT_ERROR_GENERIC_FAILURE</code>
+     *   <code>RESULT_ERROR_RADIO_OFF</code>
+     *   <code>RESULT_ERROR_NULL_PDU</code>.
+     * @param deliveryIntents if not null, an <code>ArrayList</code> of
+     *   <code>PendingIntent</code>s (one for each message part) that is
+     *   broadcast when the corresponding message part has been delivered
+     *   to the recipient.  The raw pdu of the status report is in the
+     *   extended data ("pdu").
+     */
+    protected void sendMultipartData(
+            String destAddr, String scAddr, int destPort,
+            ArrayList<SmsRawData> data, ArrayList<PendingIntent> sentIntents,
+            ArrayList<PendingIntent> deliveryIntents) {
+    }
+
+    /**
+     * Copy a text SMS to the ICC.
+     *
+     * @param scAddress Service center address
+     * @param address   Destination address or original address
+     * @param text      List of message text
+     * @param status    message status (STATUS_ON_ICC_READ, STATUS_ON_ICC_UNREAD,
+     *                  STATUS_ON_ICC_SENT, STATUS_ON_ICC_UNSENT)
+     * @param timestamp Timestamp when service center receive the message
+     * @return success or not
+     *
+     */
+    public int copyTextMessageToIccCard(
+            String scAddress, String address, List<String> text,
+            int status, long timestamp) {
+        return 0;
+    }
+
+    private void notifySmsReady(boolean isReady) {
+        // broadcast SMS_STATE_CHANGED_ACTION intent
+        Intent intent = new Intent(Intents.SMS_STATE_CHANGED_ACTION);
+        intent.putExtra("ready", isReady);
+        SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());
+        mWakeLock.acquire(WAKE_LOCK_TIMEOUT);
+        mContext.sendBroadcast(intent);
+    }
+
+    /**
+     * Set the memory storage status of the SMS
+     * This function is used for FTA test only
+     *
+     * @param status false for storage full, true for storage available
+     *
+     */
+    protected void setSmsMemoryStatus(boolean status) {
+        if (status != mStorageAvailable) {
+            mStorageAvailable = status;
+            mCi.reportSmsMemoryStatus(status, null);
+        }
+    }
+
+    protected boolean isSmsReady() {
+        return mSmsReady;
+    }
+
+    // Orange feature SMS Encoding Type Setting
+    /**
+     * Send an SMS with specified encoding type.
+     *
+     * @param destAddr the address to send the message to
+     * @param scAddr the SMSC to send the message through, or NULL for the
+     *  default SMSC
+     * @param text the body of the message to send
+     * @param encodingType the encoding type of content of message(GSM 7-bit, Unicode or Automatic)
+     * @param sentIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is sucessfully sent, or failed.
+     *  The result code will be <code>Activity.RESULT_OK<code> for success,
+     *  or one of these errors:<br>
+     *  <code>RESULT_ERROR_GENERIC_FAILURE</code><br>
+     *  <code>RESULT_ERROR_RADIO_OFF</code><br>
+     *  <code>RESULT_ERROR_NULL_PDU</code><br>
+     *  For <code>RESULT_ERROR_GENERIC_FAILURE</code> the sentIntent may include
+     *  the extra "errorCode" containing a radio technology specific value,
+     *  generally only useful for troubleshooting.<br>
+     *  The per-application based SMS control checks sentIntent. If sentIntent
+     *  is NULL the caller will be checked against all unknown applications,
+     *  which cause smaller number of SMS to be sent in checking period.
+     * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is delivered to the recipient.  The
+     *  raw pdu of the status report is in the extended data ("pdu").
+     * @param messageUri optional URI of the message if it is already stored in the system
+     * @param callingPkg the calling package name
+     */
+    protected void sendTextWithEncodingType(String destAddr, String scAddr, String text,
+            int encodingType, PendingIntent sentIntent, PendingIntent deliveryIntent,
+            Uri messageUri, String callingPkg) {
+    }
+
+    // Orange feature SMS Encoding Type Setting
+    /**
+     * Send a multi-part text based SMS with specified encoding type.
+     *
+     * @param destAddr the address to send the message to
+     * @param scAddr is the service center address or null to use
+     *   the current default SMSC
+     * @param parts an <code>ArrayList</code> of strings that, in order,
+     *   comprise the original message
+     * @param encodingType the encoding type of content of message(GSM 7-bit, Unicode or Automatic)
+     * @param sentIntents if not null, an <code>ArrayList</code> of
+     *   <code>PendingIntent</code>s (one for each message part) that is
+     *   broadcast when the corresponding message part has been sent.
+     *   The result code will be <code>Activity.RESULT_OK<code> for success,
+     *   or one of these errors:
+     *   <code>RESULT_ERROR_GENERIC_FAILURE</code>
+     *   <code>RESULT_ERROR_RADIO_OFF</code>
+     *   <code>RESULT_ERROR_NULL_PDU</code>.
+     * @param deliveryIntents if not null, an <code>ArrayList</code> of
+     *   <code>PendingIntent</code>s (one for each message part) that is
+     *   broadcast when the corresponding message part has been delivered
+     *   to the recipient.  The raw pdu of the status report is in the
+     *   extended data ("pdu").
+     * @param messageUri optional URI of the message if it is already stored in the system
+     * @param callingPkg the calling package name
+     */
+    protected void sendMultipartTextWithEncodingType(String destAddr, String scAddr,
+            ArrayList<String> parts, int encodingType, ArrayList<PendingIntent> sentIntents,
+            ArrayList<PendingIntent> deliveryIntents, Uri messageUri, String callingPkg) {
+    }
+
+    /**
+     * Send an SMS with specified encoding type.
+     *
+     * @param destAddr the address to send the message to
+     * @param scAddr the SMSC to send the message through, or NULL for the
+     *  default SMSC
+     * @param text the body of the message to send
+     * @param extraParams extra parameters, such as validity period, encoding type
+     * @param sentIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is sucessfully sent, or failed.
+     * @param deliveryIntent if not NULL this <code>PendingIntent</code> is
+     *  broadcast when the message is delivered to the recipient.  The
+     *  raw pdu of the status report is in the extended data ("pdu").
+     * @param messageUri optional URI of the message if it is already stored in the system
+     * @param callingPkg the calling package name
+     * @param messageUri optional URI of the message if it is already stored in the system
+     * @param callingPkg the calling package name
+     */
+    public void sendTextWithExtraParams(String destAddr, String scAddr, String text,
+            Bundle extraParams, PendingIntent sentIntent, PendingIntent deliveryIntent,
+            Uri messageUri, String callingPkg) {
+    }
+
+    /**
+     * Send a multi-part text based SMS with specified encoding type.
+     *
+     * @param destAddr the address to send the message to
+     * @param scAddr is the service center address or null to use
+     *   the current default SMSC
+     * @param parts an <code>ArrayList</code> of strings that, in order,
+     *   comprise the original message
+     * @param extraParams extra parameters, such as validity period, encoding type
+     * @param sentIntents if not null, an <code>ArrayList</code> of
+     *   <code>PendingIntent</code>s (one for each message part) that is
+     *   broadcast when the corresponding message part has been sent.
+     * @param deliveryIntents if not null, an <code>ArrayList</code> of
+     *   <code>PendingIntent</code>s (one for each message part) that is
+     *   broadcast when the corresponding message part has been delivered
+     *   to the recipient.  The raw pdu of the status report is in the
+     *   extended data ("pdu").
+     * @param messageUri optional URI of the message if it is already stored in the system
+     * @param callingPkg the calling package name
+     */
+    public void sendMultipartTextWithExtraParams(String destAddr, String scAddr,
+            ArrayList<String> parts, Bundle extraParams, ArrayList<PendingIntent> sentIntents,
+            ArrayList<PendingIntent> deliveryIntents, Uri messageUri, String callingPkg) {
+    }
+
+    /**
+     * Because it may have multiple apks use the same uid, ex. Mms.apk and omacp.apk, we need to
+     * exactly find the correct calling apk. We should use running process to check the correct
+     * apk. If we could not find the process via pid, this apk may be killed. We will use the
+     * default behavior, find the first package name via uid.
+     *
+     * @param packageNames package names query from user id
+     * @return null if package names length is zero or could not match the process id;
+     *         package name match the process id
+     */
+    private String getPackageNameViaProcessId(String[] packageNames) {
+        String packageName = null;
+
+        if (packageNames.length == 1) {
+            packageName = packageNames[0];
+        } else if (packageNames.length > 1) {
+            int callingPid = Binder.getCallingPid();
+            Iterator index = null;
+
+            ActivityManager am = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
+            List processList = am.getRunningAppProcesses();
+            if (processList != null)
+            {
+                index = processList.iterator();
+                while (index.hasNext()) {
+                    ActivityManager.RunningAppProcessInfo processInfo = (ActivityManager.RunningAppProcessInfo) (index.next());
+                    if (callingPid == processInfo.pid) {
+                        packageName = processInfo.processName;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return packageName;
+    }
+
+    protected void handleSendNextTracker(SmsTracker currentTracker) {
+        int szPdu = 0;
+        if (currentTracker != null) {
+            HashMap map = currentTracker.mData;
+            int smscLength = 0;
+            int pduLength = 0;
+            if (map != null) {
+                if (map.get("smsc") != null) {
+                    smscLength = ((byte[]) map.get("smsc")).length;
+                }
+
+                if (map.get("pdu") != null) {
+                    pduLength = ((byte[]) map.get("pdu")).length;
+                }
+                szPdu = smscLength + pduLength;
+            }
+        } else {
+            Rlog.d(TAG, "Current tracker is null");
+        }
+
+        SmsTracker nextTracker = null;
+        synchronized (mSTrackersQueue) {
+            // remove the first tracker and send the next one if any
+            Rlog.d(TAG, "Remove Tracker");
+            SmsTracker tempTracker = (!mSTrackersQueue.isEmpty()) ? mSTrackersQueue.remove(0) :
+                    null;
+            if (tempTracker != null && tempTracker.equals(currentTracker)) {
+                Rlog.d(TAG, "[pdu size: " + szPdu);
+            }
+
+            if (!mSTrackersQueue.isEmpty()) {
+                nextTracker = mSTrackersQueue.get(0);
+            }
+        }
+
+        if (nextTracker != null) {
+            sendSms(nextTracker);
+        } else {
+            Rlog.d(TAG, "mSTrackersQueue is empty");
+        }
+    }
+    // MTK-END
 }

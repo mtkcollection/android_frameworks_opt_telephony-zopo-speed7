@@ -99,6 +99,44 @@ public class SmsCbConstants {
     /** CMAS Message Identifier for Presidential Level alerts for Additional Languages. */
     public static final int MESSAGE_ID_CMAS_ALERT_PRESIDENTIAL_LEVEL_LANGUAGE = 0x111F;
 
+    // MTK-START
+    /** CMAS Message Identifier for Extreme alerts, Urgency=Immediate, Certainty=Observed  for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_EXTREME_IMMEDIATE_OBSERVED_LANGUAGE = 0x1120;
+
+    /** CMAS Message Identifier for Extreme alerts, Urgency=Immediate, Certainty=Likely for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_EXTREME_IMMEDIATE_LIKELY_LANGUAGE  = 0x1121;
+
+    /** CMAS Message Identifier for Extreme alerts, Urgency=Expected, Certainty=Observed for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_EXTREME_EXPECTED_OBSERVED_LANGUAGE = 0x1122;
+
+    /** CMAS Message Identifier for Extreme alerts, Urgency=Expected, Certainty=Likely for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_EXTREME_EXPECTED_LIKELY_LANGUAGE   = 0x1123;
+
+    /** CMAS Message Identifier for Severe alerts, Urgency=Immediate, Certainty=Observed for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_SEVERE_IMMEDIATE_OBSERVED_LANGUAGE = 0x1124;
+
+    /** CMAS Message Identifier for Severe alerts, Urgency=Immediate, Certainty=Likely for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_SEVERE_IMMEDIATE_LIKELY_LANGUAGE   = 0x1125;
+
+    /** CMAS Message Identifier for Severe alerts, Urgency=Expected, Certainty=Observed for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_SEVERE_EXPECTED_OBSERVED_LANGUAGE  = 0x1126;
+
+    /** CMAS Message Identifier for Severe alerts, Urgency=Expected, Certainty=Likely for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_SEVERE_EXPECTED_LIKELY_LANGUAGE    = 0x1127;
+
+    /** CMAS Message Identifier for Child Abduction Emergency (Amber Alert) for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_CHILD_ABDUCTION_EMERGENCY_LANGUAGE = 0x1128;
+
+    /** CMAS Message Identifier for the Required Monthly Test for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_REQUIRED_MONTHLY_TEST_LANGUAGE     = 0x1129;
+
+    /** CMAS Message Identifier for CMAS Exercise for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_EXERCISE_LANGUAGE                  = 0x112A;
+
+    /** CMAS Message Identifier for operator defined use for Additional Languages. */
+    public static final int MESSAGE_ID_CMAS_ALERT_OPERATOR_DEFINED_USE_LANGUAGE      = 0x112B;
+    // MTK-END
+
     /** End of CMAS Message Identifier range (including future extensions). */
     public static final int MESSAGE_ID_CMAS_LAST_IDENTIFIER                 = 0x112F;
 

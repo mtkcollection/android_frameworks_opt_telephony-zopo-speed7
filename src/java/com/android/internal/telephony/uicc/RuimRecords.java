@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +28,7 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Locale;
+
 import android.content.Context;
 import android.os.AsyncResult;
 import android.os.Message;
@@ -35,13 +41,27 @@ import android.util.Log;
 import android.content.res.Resources;
 
 import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.CommandsInterface.RadioState;
 import com.android.internal.telephony.GsmAlphabet;
 import com.android.internal.telephony.MccTable;
 import com.android.internal.telephony.SubscriptionController;
-
 import com.android.internal.telephony.cdma.sms.UserData;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
 import com.android.internal.util.BitwiseInputStream;
+import com.android.internal.telephony.TelephonyIntents;
+import com.android.internal.telephony.PhoneConstants;
+import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.PhoneFactory;
+import com.android.internal.telephony.IccCardConstants;
+import android.telephony.SubscriptionManager;
+import com.android.internal.telephony.TelephonyProperties;
+
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
+import com.mediatek.internal.telephony.ltedc.LteDcPhoneProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteRatController;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteRatController.RoamingMode;
 
 /**
  * {@hide}
@@ -66,6 +86,7 @@ public final class RuimRecords extends IccRecords {
     private String mHomeSystemId;
     private String mHomeNetworkId;
     private String mNai;
+    private String mRuimImsi = null;
 
     @Override
     public String toString() {
@@ -87,6 +108,9 @@ public final class RuimRecords extends IccRecords {
     private static final int EVENT_GET_IMSI_DONE = 3;
     private static final int EVENT_GET_DEVICE_IDENTITY_DONE = 4;
     private static final int EVENT_GET_ICCID_DONE = 5;
+//Added by M start
+    private static final int EVENT_GET_IMSI_RETRY = 6;
+//Added by M end
     private static final int EVENT_GET_CDMA_SUBSCRIPTION_DONE = 10;
     private static final int EVENT_UPDATE_DONE = 14;
     private static final int EVENT_GET_SST_DONE = 17;
@@ -97,11 +121,33 @@ public final class RuimRecords extends IccRecords {
     private static final int EVENT_GET_SMS_DONE = 22;
 
     private static final int EVENT_RUIM_REFRESH = 31;
+    ///M: phonebook@{
+    private static final int EVENT_PHB_READY = 102;
+    private static final int EVENT_CDMA_IMSI_READY_TO_QUERY = 103;
+    private static final int EVENT_CDMA_IMSI_READY_QUERY_DONE = 104;
+
+    static final String[] SIMRECORD_PROPERTY_RIL_PHB_READY  = {
+        "gsm.sim.ril.phbready",
+        "gsm.sim.ril.phbready.2",
+        "gsm.sim.ril.phbready.3",
+        "gsm.sim.ril.phbready.4"
+    };
+
+    int mSlotId;
+    int mPhoneId;
+    private boolean mPhbReady = false;
+    private Phone mPhone;
+    private BroadcastReceiver mSubReceiver;
+    private boolean mPhbWaitSub = false;
+    protected static final int EVENT_RADIO_STATE_CHANGED  = 2;
+    ///M: phonebook end @}
 
     public RuimRecords(UiccCardApplication app, Context c, CommandsInterface ci) {
         super(app, c, ci);
+        mPhoneId = app.getSlotId();
+        mPhone = PhoneFactory.getPhone(app.getPhoneId());
 
-        mAdnCache = new AdnRecordCache(mFh);
+        mAdnCache = new AdnRecordCache(mFh, ci, app);
 
         mRecordsRequested = false;  // No load request is made till SIM ready
 
@@ -111,20 +157,70 @@ public final class RuimRecords extends IccRecords {
         // NOTE the EVENT_SMS_ON_RUIM is not registered
         mCi.registerForIccRefresh(this, EVENT_RUIM_REFRESH, null);
 
+        ///M: add for PhoneBook @{
+        mCi.registerForPhbReady(this, EVENT_PHB_READY, null);
+        mCi.registerForCdmaImsiReady(this, EVENT_CDMA_IMSI_READY_TO_QUERY, null);
+        mCi.registerForRadioStateChanged(this, EVENT_RADIO_STATE_CHANGED, null);
+
+        IntentFilter phbFilter = new IntentFilter();
+        phbFilter.addAction(Intent.ACTION_AIRPLANE_MODE_CHANGED);
+        phbFilter.addAction("android.intent.action.ACTION_SHUTDOWN_IPO");
+        mContext.registerReceiver(mHandlePhbReadyReceiver, phbFilter);
+        ///M: @)
+
         // Start off by setting empty state
         resetRecords();
 
         mParentApp.registerForReady(this, EVENT_APP_READY, null);
         if (DBG) log("RuimRecords X ctor this=" + this);
+
+        //alps01292449 when radio off, no need reset adnCache
+        mAdnCache.reset();
+
+        //Add for support SubId
+        mSubReceiver = new SubBroadCastReceiver();
+        IntentFilter subFilter = new IntentFilter();
+        subFilter.addAction(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+        mContext.registerReceiver(mSubReceiver, subFilter);
+
+        ///M: ALPS01099419, mAdnCache is needed before onUpdateIccAvailability.
+        if(DBG) log("RuimRecords updateIccRecords in IccPhoneBookeInterfaceManager");
+        mPhone.getIccPhoneBookInterfaceManager().updateIccRecords(this);
+
+        ///M: ALPS01370736 Check if phb is ready or not, if phb was already ready, we won't wait for phb ready.@{
+        if(isPhbReady()) {
+            if(DBG) log("RuimRecords : Phonebook is ready.");
+
+            //The value of mPhbReady is changed in isPhbReady()
+            broadcastPhbStateChangedIntent(mPhbReady);
+        }
+        ///M: @}
     }
 
     @Override
     public void dispose() {
         if (DBG) log("Disposing RuimRecords " + this);
+        //add for ALPS02015246 SIM Hot Swap
+       if ((mParentApp != null)) {
+           if (DBG) log("Disposing RuimRecords mPhbReady " + " = " + mPhbReady);
+           if (mPhbReady) {
+             	 log("Disposing RuimRecords set PHB unready");
+               SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false");
+               //log(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()] + " = " + SystemProperties.get(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false"));
+               mPhbReady = false;
+               broadcastPhbStateChangedIntent(mPhbReady);
+            } else {
+               log("dispose() " + mPhbReady+ " is not true");
+            }
+        }
         //Unregister for all events
         mCi.unregisterForIccRefresh(this);
         mParentApp.unregisterForReady(this);
         resetRecords();
+        mPhbWaitSub = false;
+
+        //alps01292449 when radio off, no need reset adnCache
+        mAdnCache.reset();
         super.dispose();
     }
 
@@ -138,7 +234,7 @@ public final class RuimRecords extends IccRecords {
         log("setting0 mMncLength" + mMncLength);
         mIccId = null;
 
-        mAdnCache.reset();
+        //mAdnCache.reset();
 
         // Don't clean up PROPERTY_ICC_OPERATOR_ISO_COUNTRY and
         // PROPERTY_ICC_OPERATOR_NUMERIC here. Since not all CDMA
@@ -230,7 +326,20 @@ public final class RuimRecords extends IccRecords {
         int mcc = Integer.parseInt(mImsi.substring(0,3));
         return mImsi.substring(0, 3 + MccTable.smallestDigitsMccForMnc(mcc));
     }
+    ///M: add by mtk94127, implement the API of iccrecords @{
+    @Override
+    public String getOperatorNumeric() {
+        if (mImsi == null) {
+            return null;
+        }
 
+        if (mMncLength != UNINITIALIZED && mMncLength != UNKNOWN) {
+            return mImsi.substring(0, 3 + mMncLength);
+        }
+        int mcc = Integer.parseInt(mImsi.substring(0, 3));
+        return mImsi.substring(0, 3 + MccTable.smallestDigitsMccForMnc(mcc));
+    }
+    ///M: @}
     // Refer to ETSI TS 102.221
     private class EfPlLoaded implements IccRecordLoaded {
         @Override
@@ -601,7 +710,17 @@ public final class RuimRecords extends IccRecords {
         try { switch (msg.what) {
             case EVENT_APP_READY:
                 onReady();
+                //Added by M start
+                if (DBG) {
+                    log("handleMessage (EVENT_APP_READY)");
+                }
                 break;
+
+            case EVENT_GET_IMSI_RETRY:
+                log("Event EVENT_GET_IMSI_RETRY Received, to get through ril");
+                mCi.getIMSI(obtainMessage(EVENT_GET_IMSI_DONE));
+            break;
+            //Added by M end
 
             case EVENT_GET_DEVICE_IDENTITY_DONE:
                 log("Event EVENT_GET_DEVICE_IDENTITY_DONE Received");
@@ -626,22 +745,40 @@ public final class RuimRecords extends IccRecords {
                     mImsi = null;
                 }
 
-                // FIXME: CSIM IMSI may not contain the MNC.
-                if (false) {
-                    log("IMSI: " + mImsi.substring(0, 6) + "xxxxxxxxx");
+                log("IMSI: " + mImsi.substring(0, 6) + "xxxxxxxxx");
 
-                    String operatorNumeric = getRUIMOperatorNumeric();
-                    if (operatorNumeric != null) {
-                        if (operatorNumeric.length() <= 6) {
-                            log("update mccmnc=" + operatorNumeric);
-                            MccTable.updateMccMncConfiguration(mContext, operatorNumeric, false);
-                        }
+                //Added by M start
+                //ALPS02016252 Do not need to retry to read imsi
+                //if (mImsi != null && mImsi.equals("111111110000000")) {
+                //    Rlog.d(LOG_TAG, "IMSI: " + mImsi);
+                //    mImsi = null;
+                //}
+                //Added by M end
+
+                String operatorNumeric = getRUIMOperatorNumeric();
+                if (operatorNumeric != null) {
+                    if (operatorNumeric.length() <= 6) {
+                        MccTable.updateMccMncConfiguration(mContext, operatorNumeric, false);
                     }
-                } else {
-                    String operatorNumeric = getRUIMOperatorNumeric();
-                    log("NO update mccmnc=" + operatorNumeric);
                 }
 
+                //Added by M start
+                if (mImsi == null) {
+                    isRecordLoadResponse = false;
+                    getIMSIDelay(3000);
+                } else {
+                    //Added by M start, set cdma operator MCC value
+                   if (!mImsi.equals("") && mImsi.length() >= 3) {
+                        SystemProperties.set("cdma.icc.operator.mcc", mImsi.substring(0, 3));
+                   }
+                   //Added by M end
+                }
+                //Added by M end
+                if (!mImsi.equals(mRuimImsi)) {
+                    mRuimImsi = mImsi;
+                    mImsiReadyRegistrants.notifyRegistrants();
+                    log("RuimRecords: mImsiReadyRegistrants.notifyRegistrants");
+                }
             break;
 
             case EVENT_GET_CDMA_SUBSCRIPTION_DONE:
@@ -702,6 +839,99 @@ public final class RuimRecords extends IccRecords {
                 }
                 break;
 
+            //mtk add start
+            case EVENT_PHB_READY:
+                if (DBG) log("handleMessage (EVENT_PHB_READY) ");
+                mPhbReady = true;
+                //No need to update system property because it has been updated in rill.
+                mPhone = PhoneFactory.getPhone(mParentApp.getPhoneId());
+                if (mPhone.getIccPhoneBookInterfaceManager().getAdnRecordCache() == null) {
+                    mPhone.getIccPhoneBookInterfaceManager().updateIccRecords(this);
+                }
+                broadcastPhbStateChangedIntent(mPhbReady);
+                break;
+            //mtk add end
+
+            case EVENT_CDMA_IMSI_READY_TO_QUERY:
+                log("handleMessage (EVENT_CDMA_IMSI_READY_TO_QUERY) mImsi= " + mImsi);
+                mCi.getIMSIForApp(mParentApp.getAid(),
+                    obtainMessage(EVENT_CDMA_IMSI_READY_QUERY_DONE));
+                break;
+            case EVENT_CDMA_IMSI_READY_QUERY_DONE:
+                log("handleMessage (EVENT_CDMA_IMSI_READY_QUERY_DONE)");
+
+                ar = (AsyncResult) msg.obj;
+                if (ar.exception != null) {
+                    loge("Exception querying IMSI, Exception:" + ar.exception);
+                    break;
+                }
+                mImsi = (String) ar.result;
+                // IMSI (MCC+MNC+MSIN) is at least 6 digits, but not more
+                // than 15 (and usually 15).
+                if (mImsi != null && (mImsi.length() < 6 || mImsi.length() > 15)) {
+                    loge("invalid IMSI " + mImsi);
+                    mImsi = null;
+                }
+                log("IMSI: " + mImsi.substring(0, 6) + "xxxxxxxxx");
+
+                String opeNumeric = getRUIMOperatorNumeric();
+                if (opeNumeric != null) {
+                    if (opeNumeric.length() <= 6) {
+                        MccTable.updateMccMncConfiguration(mContext, opeNumeric, false);
+                    }
+                }
+                if (!mImsi.equals("") && mImsi.length() >= 3) {
+                    SystemProperties.set("cdma.icc.operator.mcc", mImsi.substring(0, 3));
+                }
+                if (!mImsi.equals(mRuimImsi)) {
+                    mRuimImsi = mImsi;
+                    mImsiReadyRegistrants.notifyRegistrants();
+                    log("RuimRecords: mImsiReadyRegistrants.notifyRegistrants");
+                }
+                if (mRecordsToLoad == 0 && mRecordsRequested == true) {
+                    onAllRecordsLoaded();
+                }
+            // M add this for do those consuming SIM_IO operation one by one, end
+            /*ALPS02034980
+            case EVENT_RADIO_STATE_CHANGED:
+                log("handle message EVENT_RADIO_STATE_CHANGED");
+                if (mCi.getRadioState() != RadioState.RADIO_ON) {
+                      boolean gsmRadioAvailable = isGsmRadioAvailable();
+                    if (gsmRadioAvailable && isSvlteRoaming()) {
+                          if (!isPhbReady()) {
+                            mPhbReady = true;
+                            SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "true");
+                            broadcastPhbStateChangedIntent(mPhbReady);
+                        }
+                    } else {
+                          // Modem3 is radio off, Modem1 may be not off , but PHB should be unready.
+                          if (mPhbReady) {
+                            mPhbReady = false;
+                            SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false");
+                            broadcastPhbStateChangedIntent(mPhbReady);
+                        }
+                    }
+                }
+                break;*/
+            // MTK-START
+            /* Refine ICCID record updating by SYS PRO, 2015/03/23 { */
+            case EVENT_GET_ICCID:
+                final int delayMills = 1000;
+                mIccId = SystemProperties.get(ICCRECORD_PROPERTY_ICCID[mSlotId], "");
+                if (DBG) {
+                    log("Received EVENT_GET_ICCID, mSlotId: " + mSlotId + ", mIccId: " + mIccId);
+                }
+                if (mIccId.equals("")) {
+                    sendMessageDelayed(obtainMessage(EVENT_GET_ICCID, null), delayMills);
+                } else {
+                    if (mIccId.equals("N/A")) {
+                        mIccId = "";
+                    }
+                    isRecordLoadResponse = true;
+                }
+                break;
+            /* Refine ICCID record updating by SYS PRO, 2015/03/23 } */
+            // MTK-END
             default:
                 super.handleMessage(msg);   // IccRecords handles generic record load responses
 
@@ -810,27 +1040,33 @@ public final class RuimRecords extends IccRecords {
         // Further records that can be inserted are Operator/OEM dependent
 
         // FIXME: CSIM IMSI may not contain the MNC.
-        if (false) {
-            String operator = getRUIMOperatorNumeric();
-            if (!TextUtils.isEmpty(operator)) {
-                log("onAllRecordsLoaded set 'gsm.sim.operator.numeric' to operator='" +
-                        operator + "'");
-                log("update icc_operator_numeric=" + operator);
-                mTelephonyManager.setSimOperatorNumericForPhone(
-                        mParentApp.getPhoneId(), operator);
-            } else {
-                log("onAllRecordsLoaded empty 'gsm.sim.operator.numeric' skipping");
+        String operator = getRUIMOperatorNumeric();
+        if (!TextUtils.isEmpty(operator)) {
+            log("onAllRecordsLoaded set 'gsm.sim.operator.numeric' to operator='" +
+                    operator + "'");
+            log("update icc_operator_numeric=" + operator);
+            mTelephonyManager.setSimOperatorNumericForPhone(
+                    mParentApp.getPhoneId(), operator);
+        } else {
+            log("onAllRecordsLoaded empty 'gsm.sim.operator.numeric' skipping");
+        }
+        if (!TextUtils.isEmpty(mImsi)) {
+            log("onAllRecordsLoaded set mcc imsi=" + mImsi);
+            // MTK-START
+            String countryCode;
+            try {
+                countryCode =
+                    MccTable.countryCodeForMcc(Integer.parseInt(mImsi.substring(0, 3)));
+            } catch (NumberFormatException e) {
+                countryCode = null;
+                loge("RuimRecords: Corrupt IMSI!");
             }
-
-            if (!TextUtils.isEmpty(mImsi)) {
-                log("onAllRecordsLoaded set mcc imsi=" + mImsi);
-                mTelephonyManager.setSimCountryIsoForPhone(
-                        mParentApp.getPhoneId(),
-                        MccTable.countryCodeForMcc(
-                        Integer.parseInt(mImsi.substring(0,3))));
-            } else {
-                log("onAllRecordsLoaded empty imsi skipping setting mcc");
-            }
+            mTelephonyManager.setSimCountryIsoForPhone(
+                    mParentApp.getPhoneId(),
+                    countryCode);
+            // MTK-END
+        } else {
+            log("onAllRecordsLoaded empty imsi skipping setting mcc");
         }
 
         setLocaleFromCsim();
@@ -856,6 +1092,12 @@ public final class RuimRecords extends IccRecords {
         mCi.getCDMASubscription(obtainMessage(EVENT_GET_CDMA_SUBSCRIPTION_DONE));
     }
 
+//Added by M start
+    private void getIMSIDelay(long delayMillis) {
+        Rlog.d(LOG_TAG, "to getIMSIDelay, delayMillis = " + delayMillis);
+        sendEmptyMessageDelayed(EVENT_GET_IMSI_RETRY, delayMillis);
+    }
+//Added by M end
 
     private void fetchRuimRecords() {
         mRecordsRequested = true;
@@ -865,10 +1107,15 @@ public final class RuimRecords extends IccRecords {
         mCi.getIMSIForApp(mParentApp.getAid(), obtainMessage(EVENT_GET_IMSI_DONE));
         mRecordsToLoad++;
 
-        mFh.loadEFTransparent(EF_ICCID,
-                obtainMessage(EVENT_GET_ICCID_DONE));
+        //mFh.loadEFTransparent(EF_ICCID,
+        //        obtainMessage(EVENT_GET_ICCID_DONE));
+        //mRecordsToLoad++;
+        // MTK-START
+        /* Refine ICCID record updating by SYS PRO, 2015/03/23 {*/
+        getIccIdRecord();
         mRecordsToLoad++;
-
+        /* Refine ICCID record updating by SYS PRO, 2015/03/23 }*/
+        // MTK-END
         Resources resource = Resources.getSystem();
         if (resource.getBoolean(com.android.internal.R.bool.config_use_sim_language_file)) {
             mFh.loadEFTransparent(EF_PL,
@@ -917,8 +1164,28 @@ public final class RuimRecords extends IccRecords {
      */
     @Override
     public int getDisplayRule(String plmn) {
-        // TODO together with spn
-        return 0;
+        int rule;
+        String spn = getServiceProviderName();
+        log("getDisplayRule mParentApp is " +
+            ((mParentApp != null) ? mParentApp : "null"));
+
+        if (mParentApp != null && mParentApp.getUiccCard() != null &&
+              mParentApp.getUiccCard().getOperatorBrandOverride() != null) {
+            // If the operator has been overridden, treat it as the SPN file on the SIM did not exist.
+            log("getDisplayRule, getOperatorBrandOverride is not null");
+            rule = SPN_RULE_SHOW_PLMN;
+        } else if (mCsimSpnDisplayCondition == false) {
+            // SPN is not required to display
+            log("getDisplayRule, no EF_SPN");
+            rule = SPN_RULE_SHOW_PLMN;
+        } else if (!TextUtils.isEmpty(spn) && !spn.equals("")) {
+            log("getDisplayRule, show spn");
+            rule = SPN_RULE_SHOW_SPN;
+        } else {
+            log("getDisplayRule, show plmn");
+            rule = SPN_RULE_SHOW_PLMN;
+        }
+        return rule;
     }
 
     @Override
@@ -959,12 +1226,18 @@ public final class RuimRecords extends IccRecords {
         return 0;
     }
 
+    // UTK start
     private void handleRuimRefresh(IccRefreshResponse refreshResponse) {
         if (refreshResponse == null) {
             if (DBG) log("handleRuimRefresh received without input");
             return;
         }
 
+        if (DBG) {
+            log("handleRuimRefresh process ruim refresh");
+        }
+
+        /*
         if (refreshResponse.aid != null &&
                 !refreshResponse.aid.equals(mParentApp.getAid())) {
             // This is for different app. Ignore.
@@ -991,7 +1264,25 @@ public final class RuimRecords extends IccRecords {
                 if (DBG) log("handleRuimRefresh with unknown operation");
                 break;
         }
+        */
+
+        switch (refreshResponse.refreshResult) {
+            case CommandsInterface.REFRESH_NAA_INIT_AND_FULL_FILE_CHANGE:
+            case CommandsInterface.REFRESH_NAA_FILE_CHANGE:
+            case CommandsInterface.REFRESH_NAA_INIT_AND_FILE_CHANGE:
+            case CommandsInterface.REFRESH_NAA_INIT:
+                log("Refresh with NAA file change");
+                mAdnCache.reset();
+                break;
+            case CommandsInterface.REFRESH_UICC_RESET:
+                log("Refresh with UICC reset 0x04");
+                break;
+            default:
+                log("Refresh with unknown operation");
+                break;
+        }
     }
+    //UTK end
 
     public String getMdn() {
         return mMdn;
@@ -1014,12 +1305,12 @@ public final class RuimRecords extends IccRecords {
     }
     @Override
     protected void log(String s) {
-        Rlog.d(LOG_TAG, "[RuimRecords] " + s);
+        Rlog.d(LOG_TAG, "[RuimRecords] " + s + " (phoneId " + mPhoneId + ")");
     }
 
     @Override
     protected void loge(String s) {
-        Rlog.e(LOG_TAG, "[RuimRecords] " + s);
+        Rlog.e(LOG_TAG, "[RuimRecords] " + s + " (phoneId " + mPhoneId + ")");
     }
 
     @Override
@@ -1040,4 +1331,166 @@ public final class RuimRecords extends IccRecords {
         pw.println(" mHomeNetworkId=" + mHomeNetworkId);
         pw.flush();
     }
+
+    ///M: @{
+    public void broadcastPhbStateChangedIntent(boolean isReady) {
+        log("broadcastPhbStateChangedIntent, mPhbReady " + mPhbReady);
+        int subId = SubscriptionManager.getSubIdUsingPhoneId(mParentApp.getPhoneId());
+        if (subId < 0) {
+            log("broadcastPhbStateChangedIntent, subId <= 0");
+            mPhbWaitSub = true;
+        } else {
+            Intent intent = new Intent(TelephonyIntents.ACTION_PHB_STATE_CHANGED);
+            intent.putExtra("ready", isReady);
+            intent.putExtra(PhoneConstants.SUBSCRIPTION_KEY, subId);
+            if (DBG) {
+                log("Broadcasting intent ACTION_PHB_STATE_CHANGED " + isReady
+                        + " sub id " + subId);
+            }
+
+            mContext.sendBroadcast(intent);
+        }
+
+    }
+
+    public boolean isPhbReady() {
+        if (DBG) log("isPhbReady(): cached mPhbReady = " + (mPhbReady ? "true" : "false"));
+        String strPhbReady = "false";
+        String strAllSimState = "";
+        String strCurSimState = "";
+        boolean isSimLocked = false;
+        int phoneId = mParentApp.getPhoneId();
+
+        strPhbReady = SystemProperties.get(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false");
+        strAllSimState = SystemProperties.get(TelephonyProperties.PROPERTY_SIM_STATE);
+
+        if ((strAllSimState != null) && (strAllSimState.length() > 0)) {
+            String values[] = strAllSimState.split(",");
+            if ((phoneId >= 0) && (phoneId < values.length) && (values[phoneId] != null)) {
+                strCurSimState = values[phoneId];
+            }
+        }
+
+        isSimLocked = (strCurSimState.equals("NETWORK_LOCKED") || strCurSimState.equals("PIN_REQUIRED")); //In PUK_REQUIRED state, phb can be accessed.
+
+        if (strPhbReady.equals("true") && false == isSimLocked) {
+            mPhbReady = true;
+        } else {
+            mPhbReady = false;
+        }
+        if (DBG) log("isPhbReady(): mPhbReady = " + (mPhbReady ? "true" : "false") + ", strCurSimState = " + strCurSimState);
+        return mPhbReady;
+    }
+
+
+    private final BroadcastReceiver mHandlePhbReadyReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String action = intent.getAction();
+            log("Receive action " + action);
+
+            if(action.equals("android.intent.action.ACTION_SHUTDOWN_IPO")) {
+                log("ACTION_SHUTDOWN_IPO: clear PHB_READY systemproperties");
+                if (mParentApp != null) {
+                    SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false");
+                    mPhbReady = false;
+                }
+            }
+
+            String operator = SystemProperties.get("ro.operator.optr", "OM");
+            log("mHandlePhbReadyReceiver ro.operator.optr = " + operator);
+            /*ALPS02034980*/
+            if (Intent.ACTION_AIRPLANE_MODE_CHANGED.equals(action) && operator.equals("OM")) {
+                boolean enabled = intent.getBooleanExtra("state", false);
+                log("mHandlePhbReadyReceiver MTK_FLIGHT_MODE_POWER_OFF_MD flightmode = " + enabled);
+                if (enabled & (mParentApp != null)) {
+                    SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false");
+                    mPhbReady = false;
+                    //mtk80950 broadcast PHB not ready when flight mode.
+                    broadcastPhbStateChangedIntent(mPhbReady);
+                } else if (!enabled & (mParentApp != null)) {
+                    SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "true");
+                    mPhbReady = true;
+                    //mtk80950 broadcast PHB not ready when flight mode.
+                    broadcastPhbStateChangedIntent(mPhbReady);
+                }
+            }
+        }
+    };
+
+    //For receive sub Id
+    private class SubBroadCastReceiver extends BroadcastReceiver {
+        public void onReceive(Context content, Intent intent) {
+            String action = intent.getAction();
+            log("SubBroadCastReceiver action is " + action);
+            if (action.equals(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED) && mParentApp != null) {
+            	  log("SubBroadCastReceiver receive ACTION_SUBINFO_RECORD_UPDATED mPhbWaitSub = " + mPhbWaitSub);
+            	  log(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()] + " = " + SystemProperties.get(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false"));
+                if (mPhbWaitSub == true) {
+                    mPhbWaitSub = false;
+                    broadcastPhbStateChangedIntent(mPhbReady);
+                    return;
+                }
+                if(SystemProperties.get(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "false")
+                   .equals("false")) {
+                    SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], "true");
+                    mPhbReady = true;
+                    broadcastPhbStateChangedIntent(mPhbReady);
+                }
+            }
+        }
+    }
+
+   public void setPhbReady(boolean isReady) {
+        if (DBG) log("setPhbReady(): isReady = " + (isReady ? "true" : "false"));
+        if (mPhbReady != isReady) {
+            String strPhbReady = isReady ? "true" : "false";
+            mPhbReady = isReady;
+            SystemProperties.set(SIMRECORD_PROPERTY_RIL_PHB_READY[mParentApp.getSlotId()], strPhbReady);
+            broadcastPhbStateChangedIntent(mPhbReady);
+        }
+    }
+
+
+   //For Svlte, when roaming, CDMA will set radio off and phonebook unready
+   public boolean isGsmRadioAvailable() {
+       boolean onOrOff = false;
+       log(" isGsmRadioAvailable mPhone:" + mPhone);
+       if (mPhone != null) {
+           UiccCard uiccCard = mPhone.getUiccCard();
+           log(" isGsmRadioAvailable uiccCard:" + uiccCard);
+           if (uiccCard != null) {
+               UiccCardApplication uiccApplication
+                   = uiccCard.getApplication(UiccController.APP_FAM_3GPP);
+               log(" isGsmRadioAvailable uiccApplication:" + uiccApplication);
+               if (uiccApplication != null) {
+                   IccRecords iccRecords = uiccApplication.getIccRecords();
+                   log(" isGsmRadioAvailable iccRecords:" + iccRecords);
+                   if (iccRecords != null) {
+                       onOrOff = iccRecords.isRadioAvailable();
+                   }
+               }
+           }
+       }
+       log("For SVLTE isGsmRadioAvailable? " + onOrOff);
+       return onOrOff;
+   }
+
+   private boolean isSvlteRoaming() {
+       boolean roaming = false;
+       SvlteRatController sLteRatController = ((LteDcPhoneProxy) PhoneFactory
+           .getPhone(PhoneConstants.SIM_ID_1)).getSvlteRatController();
+       RoamingMode mRoamingMode = null;
+       if (sLteRatController != null) {
+           mRoamingMode = sLteRatController.getRoamingMode();
+           log("isSvlteRoaming get roaming state: " + mRoamingMode);
+           if ((RoamingMode.ROAMING_MODE_HOME != mRoamingMode) &&
+               (RoamingMode.ROAMING_MODE_UNKNOWN != mRoamingMode)) {
+               roaming = true;
+           }
+       }
+       log("isSvlteRoaming? " + roaming);
+       return roaming;
+   }
+   /// M: @}
 }

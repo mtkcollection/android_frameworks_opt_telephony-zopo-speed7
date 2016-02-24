@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007-2008 Esmertec AG.
  * Copyright (C) 2007-2008 The Android Open Source Project
  *
@@ -78,6 +83,18 @@ public class EncodedStringValue implements Cloneable {
             Log.e(TAG, "Default encoding must be supported.", e);
         }
     }
+
+    /// M:Code analyze 001,add a new constructor @{
+    public EncodedStringValue(int charset, String data) {
+        try {
+            String charsetName = CharacterSets.getMimeName(charset);
+            mData = data.getBytes(charsetName);
+            mCharacterSet = charset;
+        } catch (UnsupportedEncodingException e) {
+            Log.e(TAG, "Default encoding must be supported.", e);
+        }
+    }
+    /// @}
 
     /**
      * Get Char-set value.
